@@ -1,0 +1,1241 @@
+---
+title: "01. Dialogues on Democracy: Cleaning"
+author: "Shaye"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    df_print: paged
+    code_folding: hide
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+---
+# 1. Cleaning
+# Loading & Formatting Dataset
+```{r clear workspace, include=FALSE}
+rm(list=ls())
+getwd()
+options(scipen=1, digits=4)
+
+```
+
+```{r packages & wd, include=FALSE}
+
+if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
+
+library(pacman)
+
+pacman::p_load(
+  tidyverse,
+  readxl,
+  openxlsx,
+  psych,
+  Hmisc,
+  groundhog,
+  chatlogr
+)
+
+#pkgs <- c("rio", "metafor")
+#groundhog.library(pkgs, "2025-12-15")
+
+# Locate 4-analysis/ regardless of R's working directory. here::here() walks up from getwd() to the
+# .here marker in 4-analysis/, so if R was started elsewhere (e.g. your home folder) first move into
+# this file's folder (works from RStudio and VS Code; needs the rstudioapi package).
+local({
+  if (!file.exists(".here") && !file.exists("../.here")) {
+    p <- tryCatch(rstudioapi::getSourceEditorContext()$path, error = function(e) "")
+    if (nzchar(p)) setwd(dirname(p))
+  }
+  here::i_am("scripts/01_cleaning.Rmd")
+})
+
+setwd(here::here())
+
+
+#clean data loading - original dfs were loaded into R via qualtRics package & identifiers were dropped, then saved as 1 RData file (including study 1 & study 2 dfs in both numeric & text format)
+# Prefer de-identified shareable version if present, otherwise fall back to raw
+raw_file <- if (file.exists(here::here("data", "raw", "original_dfs_shareable.RData"))) {
+  here::here("data", "raw", "original_dfs_shareable.RData")
+} else {
+  here::here("data", "raw", "original_dfs.RData")
+}
+load(raw_file)
+
+
+```
+
+```{r cleaning - drop irrel columns &  join text & numeric dfs}
+
+#merging study 1 & study 2 dfs for text & numeric 
+df$Age <- as.character(df$Age)
+df_s2$Age <- as.character(df_s2$Age)
+
+df$screenquality <- as.numeric(gsub("\\D", "", df$screenquality))
+df_s2$screenquality <- as.numeric(gsub("\\D", "", df_s2$screenquality))
+
+df_trim <- bind_rows(df,df_s2)
+df_text2 <- bind_rows(df_text,df_text_s2)
+
+df_text2 <- df_text2 %>% 
+  dplyr::select(c(ResponseId,Race_1:VoteMethod)) %>%
+  dplyr::select(-(c(Gender,religion,nicks,PartyAffil_4_TEXT,PartyReg_4_TEXT)))
+
+df_trim$ResponseId <- as.character(df_trim$ResponseId)
+df_text2$ResponseId <- as.character(df_text2$ResponseId)
+
+
+df_trim <- df_trim %>%
+  dplyr::left_join(df_text2, by = "ResponseId", suffix = c("", ".text")) %>% 
+  dplyr::select(-(c(Status:IPAddress,rid,NewsSources_2:NewsSources_27,`__js_chatPartialData`,
+                    Q_RecaptchaScore,Misinformation_Resis:projectId,controlType)))
+
+
+#creating adl screener vars - if they selected the 2 responses they should have
+df_trim <- df_trim %>%
+  mutate(screener3 = if_else(screener3_4 == 1 & screener3_7 == 1 & 
+                               is.na(screener3_1) & is.na(screener3_2) & is.na(screener3_3) & is.na(screener3_5) & is.na(screener3_6) & is.na(screener3_8) & is.na(screener3_9),1,0, missing = NA)) 
+
+prop.table(table(df_trim$screener3))*100 #44% failed this
+table(df$nicks)
+
+anyDuplicated(df_trim$ResponseId) # Check for duplicates in df_trim
+sum(is.na(df_trim$ResponseId)) # Check for missing values in df_trim
+
+```
+
+```{r formatting conditions}
+
+#cleaning condition vars
+table(df_trim$messageType)
+
+df_trim <- df_trim %>%
+  mutate(messageTypeOG = messageType,
+         
+         messageType = if_else(startsWith(ChatbotPromptTemplate, "Your goal is to tell users to stop believing that the 2020 US Election was rigged/fraudulent") & messageType == "Chat_CtrlCatsDogs","Chat_Ctrl",messageType), #survey flow error? some people in cats & dogs received limited feedback prompt instead so categorizing based on prompt instead for that subset
+         
+         Condition = if_else(messageType == "Control" | messageType == "Chat_Ctrl" | messageType == "Chat_CtrlCatsDogs", 0,
+                             if_else(is.na(messageType),NA,1)), #feedback-based treatment vs the 2 control conditions (cats & dogs + adversarial dialogue)
+         
+         ConditionCatsDogs = if_else(messageType == "Chat_CtrlCatsDogs", 0,
+                                     if_else(is.na(messageType),NA,1)),
+         
+         ConditionAdvers = if_else(messageType == "Control" | messageType == "Chat_Ctrl", "Adversarial Dialogue",
+                                    if_else(messageType == "Chat_CtrlCatsDogs", "Control",
+                                            if_else(is.na(messageType),NA,"Belief-Tailored"))))
+
+
+df_trim <- df_trim %>%
+  mutate(messageType = if_else(messageType == "Active", "Qualtrics + Belief-Tailored",
+                               if_else(messageType == "Control", "Qualtrics  + Adversarial Dialogue",
+                                       if_else(messageType == "Personalized", "Qualtrics + Belief & Values-Tailored",
+                                               
+                                               if_else(messageType == "Chat_Act" | messageType == "Chat", "Chat + Belief-Tailored",
+                                                       if_else(messageType == "Chat_Ctrl", "Chat + Adversarial Dialogue",
+                                                               if_else(messageType == "Chat_Persnalized" | messageType == "Personalized-Chat", "Chat + Belief & Values-Tailored",
+                                                                       if_else(messageType == "Chat_CtrlCatsDogs", "Chat + Control", messageType)))))))) %>%
+  
+  
+  mutate(ConditionChat = if_else(str_detect(messageType, "Chat"), "Chat",
+                                 if_else(str_detect(messageType, "Qualtrics"), "Qualtrics",
+                                         if_else(is.na(messageType),NA,NA))),
+         
+         ConditionFeedback = if_else(messageType == "Qualtrics + Belief-Tailored" | messageType == "Chat + Belief-Tailored", "Belief-Tailored",
+                                     if_else(str_detect(messageType, "Values"), "Belief & Values-Tailored",
+                                             if_else(str_detect(messageType, "Adversarial"), "Adversarial Dialogue",
+                                                     if_else(str_detect(messageType, "CatsDogs") | messageType == "Chat + Control", "Control",
+                                                             if_else(is.na(messageType),NA,""))))),
+         
+         #study variable
+         Study = if_else(StartDate >= "2024-10-03" & DistributionChannel != "preview",2,
+                         if_else(StartDate >= "2024-07-31" & StartDate < "2024-10-01" & DistributionChannel != "preview",1,
+                                 if_else(StartDate >= "2024-07-20" & StartDate < "2024-07-30" & DistributionChannel != "preview",0,NA)))) %>%
+  
+  mutate(ConditionPers = as.numeric(if_else(ConditionFeedback == "Belief & Values-Tailored", 1, 0, missing = NA)),
+         ConditionDet = as.numeric(if_else(ConditionFeedback == "Belief-Tailored", 1, 0, missing = NA)),
+         ConditionLim = as.numeric(if_else(ConditionFeedback == "Adversarial Dialogue", 1, 0, missing = NA)))
+  
+
+#Making condition vars factor
+df_trim$messageType <- factor(df_trim$messageType,
+                              levels = c("Qualtrics  + Adversarial Dialogue","Qualtrics + Belief-Tailored","Qualtrics + Belief & Values-Tailored",
+                                         "Chat + Adversarial Dialogue","Chat + Control","Chat + Belief-Tailored","Chat","Chat + Belief & Values-Tailored", "Personalized-Chat"))
+
+df_trim$ConditionFeedback <- factor(df_trim$ConditionFeedback,
+                              levels = c("Control","Adversarial Dialogue","Belief & Values-Tailored","Belief-Tailored"))
+
+df_trim$ConditionChat <- factor(df_trim$ConditionChat,
+                              levels = c("Qualtrics","Chat"))
+
+df_trim$Condition <- factor(df_trim$Condition, levels = c(0,1))
+table(df_trim$Condition)
+
+
+df_trim$ConditionFeedback.z <- as.numeric(factor(df_trim$ConditionFeedback,
+                              levels = c("Control","Adversarial Dialogue","Belief & Values-Tailored","Belief-Tailored"),
+                              labels = c(1,2,3,4)))
+
+df_trim$ConditionChat.z <- as.numeric(factor(df_trim$ConditionChat,
+                              levels = c("Qualtrics","Chat"),
+                              labels = c(0,1)))
+
+
+df_trim$ConditionFeedback.z <- scale(df_trim$ConditionFeedback.z)
+df_trim$ConditionChat.z <- scale(df_trim$ConditionChat.z)
+
+
+table(df_trim$messageTypeOG)
+table(df_trim$messageType)
+table(df_trim$ConditionChat,useNA = 'always')
+table(df_trim$ConditionFeedback,useNA = 'always')
+table(df_trim$Study,useNA = 'always')
+
+
+```
+
+# Variable Creation
+```{r dvs}
+
+#election rigged adl vars----
+df_trim <- df_trim %>%
+  mutate(across(starts_with("ElecRigged"), as.numeric)) %>%
+  dplyr::select(-(ElecRigged_Pre)) #doubled var 
+
+df_trim %>%
+  select((starts_with("ElecRigged"))) %>%
+  names()
+
+#reverse code ER2, last 2 items, pre & post
+summary(df_trim$ElecRigged_2_Pre_2)
+df_trim[ , c("ElecRigged_2_Pre_2","ElecRigged_2_Pre_3","ElecRigged_2_Post_2","ElecRigged_2_Post_3")] = 6 - df_trim[ ,c("ElecRigged_2_Pre_2","ElecRigged_2_Pre_3","ElecRigged_2_Post_2","ElecRigged_2_Post_3")]
+
+summary(df_trim$ElecRigged_2_Pre_2)
+
+df_trim <- df_trim %>%
+  #means for each scale
+                dplyr::rowwise() %>%
+                 mutate(ER1_Pre = mean(c_across(starts_with("ElecRigged_1_Pre")), na.rm = TRUE),
+                        ER2_Pre = mean(c_across(starts_with("ElecRigged_2_Pre")), na.rm = TRUE),
+                        
+                        ER1_Post = mean(c_across(starts_with("ElecRigged_1_Post")), na.rm = TRUE),
+                        ER2_Post = mean(c_across(starts_with("ElecRigged_2_Post")), na.rm = TRUE)) %>%
+
+  #normalize to 0-100 scale #min-max normalization [New value = (value – min) / (max – min)]
+  dplyr::mutate(ER1Norm_Pre = ((ER1_Pre-1)/3) * 100, #1-4 scale
+                ER2Norm_Pre = ((ER2_Pre-1)/4) * 100, #1-5 scale 
+
+                ER1Norm_Post = ((ER1_Post-1)/3) * 100, #1-4 scale
+                ER2Norm_Post = ((ER2_Post-1)/4) * 100) %>% #1-5 scale
+  
+  #means again
+  dplyr::mutate(ER_Pre = mean(c_across(matches("ER\\d+Norm_Pre")), na.rm = TRUE),
+                ER_Post = mean(c_across(matches("ER\\d+Norm_Post")), na.rm = TRUE)) %>%
+  ungroup()
+
+df_trim <- df_trim %>%
+  dplyr::rename(ER0Norm_Pre = ElecRigged_Pre_1, #0-100 scale
+                ER0Norm_Post = ElecRigged_Post_1) %>% #0-100 scale
+  
+  dplyr::mutate(ER0_Diff = ER0Norm_Post - ER0Norm_Pre,
+                Sureness_Diff = Sureness_Post_1 - Sureness_Pre_1,
+                
+                ER1_Diff = ER1_Post - ER1_Pre,
+                ER2_Diff = ER2_Post - ER2_Pre,
+                ER_Diff = ER_Post - ER_Pre,)
+
+
+psych::alpha(df_trim %>%
+               dplyr::select(starts_with("ElecRigged")),na.rm = TRUE)
+
+psych::alpha(df_trim %>%
+               dplyr::select(matches("^ElecRigged_\\d.*Pre")),na.rm = TRUE)
+
+
+summary(df_trim$ER_Pre)
+hist(df_trim$ER_Pre)
+summary(df_trim$ER_Post)
+hist(df_trim$ER_Post)
+
+summary(df_trim$ER0Norm_Pre)
+#summary(df_trim$ER0Norm_Pre_center)  # pre centering now at end of "create dfs"
+summary(df_trim$ER0Norm_Post_center)
+
+summary(df_trim$ElecRigged_Pre_1)
+summary(df_trim$ElecRigged_Post_1)
+
+summary(df_trim$ElecRigged_1_Pre_1)
+summary(df_trim$ElecRigged_2_Pre_1)
+
+```
+
+```{r alt dvs - period split}
+#DVs for general views, 2024 views, 2020 views
+
+df_trim <- df_trim %>%
+  #means for each scale
+                dplyr::rowwise() %>%
+                 mutate(ER2020_Pre = mean(c(ER0Norm_Pre, (((ElecRigged_2_Pre_1-1)/4) * 100),(((ElecRigged_2_Pre_2-1)/4) * 100)), na.rm = TRUE),
+                        ER2024_Pre = mean(c(ElecRigged_2_Pre_3), na.rm = TRUE),
+                        ERGen_Pre = mean(c(ElecRigged_1_Pre_1,ElecRigged_1_Pre_2,ElecRigged_1_Pre_3), na.rm = TRUE),
+                        
+                        ER2020_Post = mean(c(ER0Norm_Post, (((ElecRigged_2_Post_1-1)/4) * 100),(((ElecRigged_2_Post_2-1)/4) * 100)), na.rm = TRUE),
+                        ER2024_Post = mean(c(ElecRigged_2_Post_3), na.rm = TRUE),
+                        ERGen_Post = mean(c(ElecRigged_1_Post_1,ElecRigged_1_Post_2,ElecRigged_1_Post_3), na.rm = TRUE)) %>%
+  ungroup() %>%
+  
+  mutate(ER2020_Diff = ER2020_Post - ER2020_Pre,
+         ER2024_Diff = ER2024_Post - ER2024_Pre,
+         ERGen_Diff = ERGen_Post - ERGen_Pre,
+         
+         #perc change
+         ER0_PercChange = (ER0Norm_Post - ER0Norm_Pre)/ER0Norm_Pre,
+         Sureness_PercChange = if_else(Sureness_Pre_1 == 0, NA, (Sureness_Post_1 - Sureness_Pre_1) / Sureness_Pre_1),
+         ER1_PercChange = (ER1_Post - ER1_Pre)/ER1_Pre,
+         ER2_PercChange = (ER2_Post - ER2_Pre)/ER2_Pre,
+         ER_PercChange = (ER_Post - ER_Pre)/ER_Pre,
+         
+         ER2020_PercChange = (ER2020_Post - ER2020_Pre)/ER2020_Pre,
+         ER2024_PercChange = (ER2024_Post - ER2024_Pre)/ER2024_Pre,
+         ERGen_PercChange = (ERGen_Post - ERGen_Pre)/ERGen_Pre)
+
+
+table(df_trim$Sureness_Pre_1)
+summary(df_trim$Sureness_Pre_1)
+summary(df_trim$Sureness_PercChange)
+summary(df_trim$Sureness_Diff)
+summary(df_trim$ElecRigged_2_Pre_1)
+
+```
+
+```{r covariates}
+#AffPol_Pre
+#AffPol_Post
+
+#DemRep_C
+#EconomicConservatism
+#SocialConservatism
+
+#VoteFor2020.text
+#VoteMethod.text
+
+#Vote2024_Pre
+#Vote2024_Post
+
+#Age
+#Race
+#EducationCategory
+#Gender
+#religion
+#Demog_14.text
+
+#table(df_trim$Demog_14.text)
+
+
+#aff pol----
+df_trim <- df_trim %>%
+  dplyr::rowwise() %>%
+  dplyr::mutate(AffPol_Pre = case_when(DemRep_C < 4 ~ (AffPol_Pre_1 - AffPol_Pre_2), #dem - rep
+                                       DemRep_C >= 4 ~ (AffPol_Pre_2 - AffPol_Pre_1)),
+                
+                AffPol_Post = case_when(DemRep_C < 4 ~ (AffPol_Post_1 - AffPol_Post_2), #dem - rep
+                                        DemRep_C >= 4 ~ (AffPol_Post_2 - AffPol_Post_1))) %>%  #rep - dem
+  dplyr::mutate(AffPol_Diff = AffPol_Post - AffPol_Pre,
+                AffPol_PercChange = (AffPol_Post - AffPol_Pre)/AffPol_Pre)
+
+
+
+summary(df_trim$AffPol_Pre)
+summary(df_trim$AffPol_Post)
+summary(df_trim$AffPol_Diff)
+
+
+#pol practices----
+table(df_trim$DemRep_C.text) #1 = dem, 6 = rep, no midpoint
+table(df_trim$DemRep_C)
+summary(df_trim$DemRep_C)
+table(df_trim$EconomicConservatism) #s1 only
+table(df_trim$SocialConservatism) #s1 only
+
+table(df_trim$PartyAffil.text)
+table(df_trim$PartyReg.text)
+table(df_trim$VoteFor2020.text)
+table(df_trim$VoteMethod.text)
+summary(df_trim$Vote_1) #likelihood of voting in 2024 elections - pre
+summary(df_trim$Vote_Post_1) #likelihood of voting in 2024 elections - post
+
+
+df_trim$VoteFor2020.clean <- ifelse(grepl("i did not vote", df_trim$VoteFor2020.text, ignore.case = TRUE), "Didn't vote", df_trim$VoteFor2020.text)
+
+df_trim <- df_trim %>%
+  dplyr::mutate(Vote2024_Diff = Vote_Post_1 - Vote_1) #%>%
+  #dplyr::rename(Vote2024_Pre = Vote_1,
+   #             Vote2024_Post = Vote_Post_1)
+
+summary(df_trim$Vote2024_Diff)
+
+#DemRep_C.text
+#VoteMethod.text
+#PartyAffil.text
+#VoteFor2020.clean
+#VoteMethod.text
+
+#age----
+
+df_trim <- df_trim %>%
+  dplyr::rename(YearOfBirth = Age)
+
+df_trim <- df_trim %>%
+  # Remove non-numeric characters except slashes, dashes, and spaces
+  mutate(Cleaned_Year = str_replace_all(YearOfBirth, "[^0-9/-]", "")) %>%
+  # Extract 4-digit years starting with 19 or 20
+  mutate(Cleaned_Year = str_extract(Cleaned_Year, "\\b(19|20)\\d{2}\\b")) %>%
+  # Remove rows with NA values in Cleaned_Year
+
+  mutate(Age = 2024 - as.numeric(Cleaned_Year))
+
+table(df_trim$Cleaned_Year)
+
+summary(df_trim$Age)
+table(df_trim$Age,useNA = "always")
+
+df_trim <- df_trim %>%
+  dplyr::mutate(AgeRange = 
+           case_when(
+             Age >= 60 ~ "60+",
+             Age >= 50 ~ "50-59",
+             Age >= 40 ~ "40-49",
+             Age >= 30 ~ "30-39",
+             Age >= 19 ~ "19-29",
+             Age <= 18 ~ "0-18"),
+           AgeRange2 = if_else(Age >=25 & Age <= 45, "25-50","Non-25-50"))
+
+df_trim$AgeRange <- factor(df_trim$AgeRange, levels = c("0-18", "19-29","30-39","40-49", "50-59","60+"))
+summary(df_trim$AgeRange)
+
+#race----
+df_trim %>%
+  dplyr::select("Race_1.text":"Race_6_TEXT.text") %>%
+  print %>%
+  map(unique)
+
+df_trim <- df_trim %>% 
+  dplyr::mutate(white = Race_1 %in% 1,
+    black = Race_2 %in% 1,
+    native = Race_3 %in% 1 | Race_6_TEXT %in% c("Indigenous American"),
+    asian = Race_4 %in% 1,
+    pacific = Race_5 %in% 1,
+    race_other = !(is.na(Race_6_TEXT) | Race_6_TEXT %in% c("Indigenous American")),
+
+    race_n = white + black + native + asian + pacific + race_other,
+    race_multi = race_n > 1,
+    
+    white1 = white & !race_multi,
+    black1 = black & !race_multi,
+    native1 = native & !race_multi,
+    asian1 = asian & !race_multi,
+    pacific1 = pacific & !race_multi,
+    race_other1 = race_other & !race_multi)
+
+
+df_trim <- df_trim %>% 
+ dplyr:: mutate(Race = case_when(
+    white1 ~ "White",
+    black1 ~ "Black",
+    native1 ~ "Other",
+    asian1 ~ "Asian",
+    pacific1 ~ "Other",
+    race_other1 ~ "Other",
+    TRUE ~ NA_character_))
+
+table(df_trim$Race, useNA = "always")
+
+df_trim <- df_trim %>%
+  dplyr::select(-(c(white:race_other1,Race_1:Race_6_TEXT,Race_1.text:Race_6_TEXT.text)))
+
+#df_trim$Race <- factor(df_trim$Race, levels = c("White","Black","Asian","Other"))
+table(df_trim$Race)
+df_trim$Race <- relevel(factor(df_trim$Race, ordered = FALSE),"White")
+
+
+#gender----
+df_trim <- df_trim %>%
+  mutate(Gender = tolower(Gender),  # Convert to lowercase
+         GenderClean = case_when(
+           grepl("female|woman|girl", Gender) ~ "Female",
+           grepl("male|man|mail", Gender) ~ "Male",
+           TRUE ~ "Other"  # If it doesn't match male or female patterns, categorize as Other
+         ))
+
+table(df_trim$GenderClean)
+
+
+#education----
+table(df_trim$Education.text,df_trim$Study)
+df_trim$Education.text <- relevel(factor(df_trim$Education.text, ordered = FALSE),"Bachelor's degree in college (4-year)")
+
+df_trim$EducationCategory <- dplyr::case_when(
+  df_trim$Education.text %in% c("Less than high school degree", 
+                                "High school graduate (high school diploma or equivalent including GED)") ~ "Less than College",
+  df_trim$Education.text %in% c("Some college but no degree",
+                                "Associate degree in college (2-year)") ~ "Some College",
+  df_trim$Education.text == "Bachelor's degree in college (4-year)" ~ "Bachelors",
+  df_trim$Education.text %in% c("Master's degree", 
+                                "Doctoral degree", 
+                                "Professional degree (JD, MD)") ~ "Higher Ed")
+
+table(df_trim$EducationCategory)
+table(df_trim$Education.text)
+
+
+#religion----
+summary(df_trim$religion)
+table(df_trim$Demog_14.text)
+
+
+#inst trust----
+df_trim <- df_trim %>% 
+  dplyr::rename(InstTrust_USGov = InstTrust_Pre_1,
+                InstTrust_CivilService = InstTrust_Pre_3,
+                InstTrust_Media = InstTrust_Pre_4,
+                InstTrust_Banks = InstTrust_Pre_5,
+                InstTrust_MajorCompanies = InstTrust_Pre_7)
+
+
+#ai trust----
+summary(df_trim$genai_trust)
+hist(df_trim$genai_trust)
+summary(df_trim$genai_fam_1)
+hist(df_trim$genai_fam_1)
+summary(df_trim$genai_use_1)
+hist(df_trim$genai_use_1)
+
+
+#news sources----
+
+#>10 point change----
+df_trim <- df_trim %>%
+  mutate(ER0_10Change = if_else(ER0_Diff >= 10, 1,
+                                if_else(ER0_Diff <= -10, -1,0)))
+
+```
+
+```{r mean centering}
+
+# Pre-score centering (*_Pre_center) moved to the end of "create dfs" below: it was done here on the pooled, unfiltered data,
+# so the "centered" means were not 0 in the analysis samples. Now it is done within study on the final dfs.
+# (Old lines kept commented out; their labels are re-applied in "create dfs".)
+#df_trim$ER0Norm_Pre_center <- df_trim$ER0Norm_Pre - mean(df_trim$ER0Norm_Pre, na.rm = T)
+#df_trim$Sureness_Pre_center <- df_trim$Sureness_Pre_1 - mean(df_trim$Sureness_Pre_1, na.rm = T)
+#df_trim$ER1_Pre_center <- df_trim$ER1_Pre - mean(df_trim$ER1_Pre, na.rm = T)
+#df_trim$ER2_Pre_center <- df_trim$ER2_Pre - mean(df_trim$ER2_Pre, na.rm = T)
+
+#df_trim$ER2024_Pre_center <- df_trim$ER2024_Pre - mean(df_trim$ER2024_Pre, na.rm = T)
+#df_trim$ER2020_Pre_center <- df_trim$ER2020_Pre - mean(df_trim$ER2020_Pre, na.rm = T)
+
+#df_trim$ERNorm_Pre_center <- df_trim$ER_Pre - mean(df_trim$ER_Pre, na.rm = T)
+#df_trim$AffPol_Pre_center <- df_trim$AffPol_Pre - mean(df_trim$AffPol_Pre, na.rm = T)
+
+# (ConditionChat and Condition are categorical factors; their numeric .z variants or dummy variables are used if needed)
+#df_trim$ConditionChat_center <- df_trim$ConditionChat - mean(df_trim$ConditionChat, na.rm = T)
+#df_trim$Condition_center <- df_trim$Condition - mean(df_trim$Condition, na.rm = T)
+df_trim$ConditionCatsDogs_center <- df_trim$ConditionCatsDogs - mean(df_trim$ConditionCatsDogs, na.rm = T) #cats and dogs only
+
+#df_trim$ER0Norm_Post_center <- df_trim$ER0Norm_Post - mean(df_trim$ER0Norm_Post, na.rm = T)
+#df_trim$Sureness_Post_center <- df_trim$Sureness_Post_1 - mean(df_trim$Sureness_Post_1, na.rm = T)
+#df_trim$ER1_Post_center <- df_trim$ER1_Post - mean(df_trim$ER1_Post, na.rm = T)
+#df_trim$ER2_Post_center <- df_trim$ER2_Post - mean(df_trim$ER2_Post, na.rm = T)
+#df_trim$ERNorm_Post_center <- df_trim$ER_Post - mean(df_trim$ER_Post, na.rm = T)
+
+```
+
+```{r intention to treat vars}
+
+#for participants who didn't complete survey, equates to 0
+df_trim <- df_trim %>%
+  mutate(ER0Norm_Post_itt = if_else(is.na(ER0Norm_Post),ER_Pre,ER0Norm_Post),
+         Sureness_Post_1_itt = if_else(is.na(Sureness_Post_1),Sureness_Pre_1,Sureness_Post_1),
+         ER1_Post_itt = if_else(is.na(ER1_Post),ER1_Pre,ER1_Post),
+         ER2_Post_itt = if_else(is.na(ER2_Post),ER2_Pre,ER2_Post),
+         
+         ER_Post_itt = if_else(is.na(ER_Post),ER_Pre,ER_Post),
+         ER2024_Post_itt = if_else(is.na(ER2024_Post),ER2024_Pre,ER2024_Post),
+         ER2020_Post_itt = if_else(is.na(ER2020_Post),ER2020_Pre,ER2020_Post),
+         AffPol_Post_itt = if_else(is.na(AffPol_Post),AffPol_Pre,AffPol_Post)) %>%
+  
+  mutate(ER0_Diff_itt = ER0Norm_Post_itt - ER0Norm_Pre,
+         Sureness_Diff_itt = Sureness_Post_1_itt - Sureness_Pre_1,
+         ER1_Diff_itt = ER1_Post_itt - ER1_Pre,
+         ER2_Diff_itt = ER2_Post_itt - ER2_Pre,
+         
+         ER_Diff_itt = ER_Post_itt - ER_Pre,
+         AffPol_Diff_itt = AffPol_Post_itt - AffPol_Pre)
+
+```
+
+```{r misbelief level groupings}
+
+df_trim <- df_trim %>%
+  mutate(BelieverType = case_when(
+    ER0Norm_Pre >= 76 & ER0Norm_Pre <= 100 ~ "76-100",
+    ER0Norm_Pre >= 51 & ER0Norm_Pre <= 75 ~ "51-75",
+    ER0Norm_Pre >= 26 & ER0Norm_Pre <= 50 ~ "26-50",
+    ER0Norm_Pre >= 0  & ER0Norm_Pre <= 25 ~ "0-25",
+    TRUE ~ NA_character_))
+df_trim$BelieverType <- factor(df_trim$BelieverType)
+
+table(df_trim$BelieverType)
+
+df_trim <- df_trim %>%
+  mutate(BelieverType2 = case_when(
+    ER0Norm_Pre == 100 ~ "100",
+    ER0Norm_Pre >= 76 & ER0Norm_Pre < 100 ~ "76-99",
+    ER0Norm_Pre >= 51 & ER0Norm_Pre <= 75 ~ "51-75",
+    ER0Norm_Pre >= 26 & ER0Norm_Pre <= 50 ~ "26-50",
+    ER0Norm_Pre >= 0  & ER0Norm_Pre <= 25 ~ "0-25",
+    TRUE ~ NA_character_))
+df_trim$BelieverType2 <- factor(df_trim$BelieverType2)
+
+
+```
+
+```{r outcome scaling}
+
+dvs_post <- c("ER0Norm_Post","Sureness_Post_1",
+             "ER1_Post","ER2_Post","ER2020_Post","ER2024_Post",
+             "ER_Post","AffPol_Post")
+
+dvs_pre <- c("ER0Norm_Pre","Sureness_Pre_1",
+              "ER1_Pre","ER2_Pre","ER2020_Pre","ER2024_Pre",
+             "ER_Pre","AffPol_Pre")
+
+dvs_diff <- c("ER0_Diff","Sureness_Diff",
+              "ER1_Diff","ER2_Diff","ER2020_Diff","ER2024_Diff",
+              "ER_Diff","AffPol_Diff")
+
+table(df_trim$ConditionFeedback)
+df_trim <- df_trim %>%
+  dplyr::mutate(across(starts_with("ER") | starts_with("AffPol"), as.numeric))
+
+
+
+
+#datasummary_skim(outcomes)
+
+
+# The *_std columns (z-scores of the pre, post and change scores) are created further down, in "create dfs", once the
+# analytic sample (df_both) exists, so that the mean and SD come from the analytic sample.
+
+#df_trim %>% select(starts_with("ER"))
+
+```
+
+```{r values categorization - maybe drop}
+
+# Define the categories and associated keywords
+categories <- list(
+  "Values and Ethics" = c("integrity", "honesty", "fairness", "responsibility", "ethics", "justice", "truth", "moral"),
+  "Relationships and Community" = c("helping", "compassion", "care", "community", "support", "friendship", "love", "kindness"),
+  "Health and Well-being" = c("health", "well-being", "balanced", "lifestyle", "Information-Tailored", "fitness", "mental", "happiness"),
+  "Family and Personal Life" = c("family", "peace", "personal", "development", "supportive", "home", "parenting"),
+  "Work and Productivity" = c("work", "dedication", "productivity", "goals", "achievement", "career", "success"),
+  "Spirituality and Beliefs" = c("spiritual", "beliefs", "purpose", "meaning", "growth", "faith", "religion", "soul")
+)
+
+# Enhanced function to categorize a principle with primary and all matching categories
+categorize_principle <- function(statement) {
+  if (is.na(statement)) {
+    return(list(PrimaryValuesCategory = "Uncategorized", ValuesCategory = "Uncategorized"))
+  }
+  
+  statement <- tolower(statement)
+  matched_categories <- c()
+  primary_category <- NA
+  
+  # Match categories based on keywords
+  for (category in names(categories)) {
+    keywords <- categories[[category]]
+    if (any(str_detect(statement, paste0("\\b", keywords, "\\b")))) {
+      if (is.na(primary_category)) {
+        primary_category <- category
+      }
+      matched_categories <- c(matched_categories, category)
+    }
+  }
+  
+  # Additional logic to better categorize previously uncategorized statements
+  if (length(matched_categories) == 0) {
+    if (str_detect(statement, "\\blove\\b|\\bfriends?\\b|\\bfamily\\b|\\bcaring\\b")) {
+      return(list(PrimaryValuesCategory = "Relationships and Community", ValuesCategory = "Relationships and Community"))
+    } else if (str_detect(statement, "\\bhappiness\\b|\\bjoy\\b|\\bwellness\\b|\\bhealth\\b")) {
+      return(list(PrimaryValuesCategory = "Health and Well-being", ValuesCategory = "Health and Well-being"))
+    } else if (str_detect(statement, "\\bhard work\\b|\\bsuccess\\b|\\bgoals?\\b")) {
+      return(list(PrimaryValuesCategory = "Work and Productivity", ValuesCategory = "Work and Productivity"))
+    } else if (str_detect(statement, "\\bfaith\\b|\\breligion\\b|\\bspiritual\\b|\\bsoul\\b")) {
+      return(list(PrimaryValuesCategory = "Spirituality and Beliefs", ValuesCategory = "Spirituality and Beliefs"))
+    } else {
+      return(list(PrimaryValuesCategory = "Uncategorized", ValuesCategory = "Uncategorized"))
+    }
+  }
+  
+  return(list(PrimaryValuesCategory = primary_category, ValuesCategory = paste(matched_categories, collapse = ", ")))
+}
+
+# Apply categorization to both primary and all matching categories
+df_trim <- df_trim %>%
+  rowwise() %>%
+  mutate(PrimaryValuesCategory = categorize_principle(WritingScreener)$PrimaryValuesCategory,
+         ValuesCategory = categorize_principle(WritingScreener)$ValuesCategory) %>%
+  ungroup()
+
+# Ensure ValuesCategory is a character vector and not a list
+df_trim <- df_trim %>%
+  mutate(ValuesCategory = sapply(ValuesCategory, function(x) {
+    if (is.list(x)) {
+      paste(unlist(x), collapse = ", ")
+    } else {
+      as.character(x)
+    }
+  })) %>%
+  mutate(ValuesCategory = as.character(ValuesCategory))
+
+
+# Group by ValuesCategory and calculate the count and frequency
+df_trim <- df_trim %>%
+  group_by(ValuesCategory) %>%
+  mutate(frequency = n()) %>%
+  ungroup()
+total_count <- nrow(df_trim)
+
+df_trim <- df_trim %>%
+  dplyr::mutate(PrimaryValuesCategory = if_else((frequency / total_count) < 0.02, "Other", ValuesCategory)) %>%
+  dplyr::select(-frequency) 
+
+
+table(df_trim$ValuesCategory)
+
+#category_counts <- as.data.frame(prop.table(table(df_trim$ValuesCategory)))
+
+```
+
+```{r join nlp dfs - (old categorizations)}
+
+df_nlp <- read_excel(here::here("data", "threat_all_statement_nlp.xlsx"))
+
+# StartDate and broken Schwartz values scores are absent/excluded from the released copy of this file, hence any_of()
+val_cols_nlp <- c("Power", "Achievement", "Hedonism", "Stimulation", "Self_Direction",
+                  "Universalism", "Benevolence", "Tradition", "Conformity", "Security", "DominantValue")
+df_nlp <- df_nlp %>% select(-any_of(c("StartDate", val_cols_nlp)), -(WritingScreener:conRestatement))
+
+df_trim <- df_trim %>%
+   dplyr::left_join(x = df_trim, 
+                    y = df_nlp, 
+                    by = "ResponseId",
+                    suffix = c("",""),
+                    keep = NULL)
+
+```
+
+```{r nlp label cleaning}
+#clean gpt labels
+df_trim <- df_trim %>% 
+  mutate(Conspiracy = str_extract(Conspiracy, "^.{1}"))
+
+df_trim$Conspiracy <- substr(df_trim$Conspiracy, 1, 1)
+
+df_trim$Conspiracy <- factor(df_trim$Conspiracy, levels = c("a", "b"), labels = c("Conspiracy", "Non-Conspiracy"))
+table(df_trim$Conspiracy)
+
+
+
+# Create a vector with the new labels based on the first letter
+consptype_map <- c(
+  "a" = "Election Fraud Conspiracy",
+  "b" = "Media Manipulation Conspiracy",
+  "c" = "Government Mistrust Conspiracy",
+  "d" = "Foreign Interference Conspiracy",
+  "e" = "Deep State or Hidden Cabal Conspiracy",
+  "f" = "Electoral Process Issues", #(Not Conspiracy)?
+  "g" = "Generalized Mistrust")
+
+
+df_trim <- df_trim %>%
+  dplyr::mutate(ConspiracyType = case_when(
+    substr(ConspiracyType, 1, 1) %in% names(consptype_map) ~ consptype_map[substr(ConspiracyType, 1, 1)], TRUE ~ ConspiracyType))
+
+
+tone_map <- c(
+  "a" = "Urgency and Immediacy",
+  "b" = "Fear and Anxiety",
+  "c" = "Anger and Frustration",
+  "d" = "Hopelessness and Despair",
+  "e" = "Determination and Activism")
+
+df_trim <- df_trim %>%
+  dplyr::mutate(EmotionalTone = case_when(
+    substr(EmotionalTone, 1, 1) %in% names(tone_map) ~ tone_map[substr(EmotionalTone, 1, 1)], TRUE ~ NA))
+
+
+threat_map <- c(
+  "a" = "External Threats", #(Foreign interference, Global pandemics, International terrorism)
+  "b" = "Internal Threats", #(Domestic extremism, Political corruption, Societal division)
+  "c" = "Systemic Threats") #(Structural inequalities, Environmental degradation, Economic instability)
+
+df_trim <- df_trim %>%
+  dplyr::mutate(TypeOfThreat = case_when(
+    substr(TypeOfThreat, 1, 1) %in% names(threat_map) ~ threat_map[substr(TypeOfThreat, 1, 1)], TRUE ~ NA))
+
+
+target_map <- c(
+  "a" = "Individual Rights and Liberties",
+  "b" = "Community and Society",
+  "c" = "National Institutions",
+  "d" = "Global Environment")
+
+df_trim <- df_trim %>%
+  dplyr::mutate(TargetOfThreat = case_when(
+    substr(TargetOfThreat, 1, 1) %in% names(target_map) ~ target_map[substr(TargetOfThreat, 1, 1)], TRUE ~ NA))
+
+
+table(df_trim$ConspiracyType)
+table(df_trim$EmotionalTone)
+prop.table(table(df_trim$EmotionalTone))*100
+table(df_trim$TypeOfThreat)
+table(df_trim$TargetOfThreat)
+
+sort(table(df_trim$LanguageUse))
+sort(table(df_trim$EmotiveLanguage))
+sort(table(df_trim$AnalyticalLanguage))
+sort(table(df_trim$AccusatoryLanguage))
+sort(table(df_trim$CatastrophicLanguage))
+sort(table(df_trim$PrescriptiveLanguage))
+
+```
+
+# Differential Attrition
+```{r diff attrition indicators, warning=FALSE, paged.print=TRUE}
+#preregistered
+#1. Indicate some openness to 2020 election fraud through a single closed-ended election denialism question (operationalized as belief > 25 on a 0-100 scale) (er0) 
+#2. Pass an attention check item embedded in the survey (nicks)
+#3. Not show evidence of using automated responding or generative AI (evaluated via a prompt injection attack) (not allowed to paste)
+#4. Complete the experiment in greater than 600 seconds. (duration) - including because of variation
+
+  #pilot, s1 & 2 with test data dropped
+df_trim <- df_trim %>%
+    #exclusion criteria - testers, surveys taken in preview mode
+  dplyr::filter(
+    DistributionChannel != "preview",
+    !(is.na(political_party))) #non-lucid/test participant (they all had pol party)
+
+
+df_trim <- df_trim %>%
+  mutate(Screened = if_else(Captcha != 15,"Captcha Failed",
+                            if_else(screenquality < 2, "Low Values Quality", #screened out of study if screen quality <1
+                                    if_else(DemRep_C < 4,"Non-Republican",
+                                            if_else(nicks !=5,"Failed Nicks","Not Screened"))),missing = NA),
+         
+         Drop = if_else(ER0Norm_Pre <= 25,"Non-Election Denier", #preregistered excluding if belief > 25 on a 0-100 scale; compare to Sureness_Pre_1 < 50 since those from 25-50 have noisier effects; OR consider some other approach for outlier removal
+                        if_else(screenquality < 2, "Low Values Quality", #adl exclusion based on values quality - not able to appropriately tailor based on values
+                                if_else(Sureness_Pre_1 < 50, "CC >= 50",  
+                                       #if_else(`Duration (in seconds)` <= 600,"Time Too Short", #speeder, (preregistered but ignoring this to account for diffs in convo length across conditions & this undermining causal inference)
+                                       "Keep")), missing = NA), 
+         
+         DropAlt = if_else(ER0Norm_Pre <= 25,"Non-Election Denier", #used for main analysis
+                        if_else(screenquality < 2, "Low Values Quality",
+                               if_else(Sureness_Pre_1 < 25, "CC >= 25", 
+                                       #if_else(`Duration (in seconds)` <= 600,"Time Too Short", 
+                                       "Keep")), missing = NA), 
+
+         NoComplete = if_else(Progress < 100, 1, 0)) %>%
+  
+  mutate(FinSample = if_else(Screened == "Not Screened" & Drop == "Keep" & Conspiracy == "Conspiracy",1,0,missing = NA),
+         ScreenedDummy = if_else(Screened == "Not Screened", 0,1), #cross reference against actual var having response in the survey we want (look at if sureness_post is missing but they completed sureness_pre)
+         AttritDurExp = case_when(is.na(Sureness_Pre_1) & is.na(Sureness_Post_1) ~ NA_integer_,
+                                  !is.na(Sureness_Pre_1) & is.na(Sureness_Post_1) ~ 1L, TRUE ~ 0L), #answered pre but not post
+         
+         AttritDurExpS1.v2 = if_else(Progress >= 46 & Progress <=58 & Study == 1 & ConditionChat == "Chat", 1, #46-58%
+                                  if_else(Progress >= 25 & Progress <=53 & Study == 1 & ConditionChat == "Qualtrics", 1,0),missing = NA), #25-53%
+         AttritDurExpS2.v2 = if_else(Progress >= 49 & Progress <= 81 & Study == 2 & ConditionChat == "Chat", 1, 0, missing = NA)) #49-81%
+
+
+#could also look at timers in timers in validation & which device they used as validation (should only be desktop) 
+
+table(df_trim$NoComplete)
+table(df_trim$AttritDurExp)
+
+table(df_trim$Screened)
+table(df_trim$Drop)
+
+```
+
+# Labeling & Cleaning
+```{r adl indicators}
+
+dvs_diff
+df_trim <- df_trim %>%
+  mutate(CCNoChange = if_else(Sureness_Diff == 0, 1, 0,missing = NA),
+         CCChangeType = case_when(Sureness_Diff > 0 ~ "Increase",
+                                  Sureness_Diff < 0 ~ "Decrease",
+                                  Sureness_Diff == 0 ~ "Same",TRUE ~ NA_character_),
+         CCDieHard = if_else(Sureness_Pre_1 == 100, 1, 0, missing = NA),
+         CCDieHardNoChange = if_else(Sureness_Pre_1 == 100 & Sureness_Diff == 0,1,0, missing = NA),
+         
+         Den2020NoChange = if_else(ER0_Diff == 0, 1, 0,missing = NA),
+         Den2020ChangeType = case_when(ER0_Diff > 0 ~ "Increase",
+                                  ER0_Diff < 0 ~ "Decrease",
+                                  ER0_Diff == 0 ~ "Same",TRUE ~ NA_character_),
+         Den2020DieHard = if_else(ER0Norm_Pre == 100, 1, 0, missing = NA),
+         Den2020DieHardNoChange = if_else(ER0Norm_Pre == 100 & ER0_Diff == 0,1,0, missing = NA),
+         
+         AnyChange = if_else(ER0_Diff <0 | Sureness_Diff <0 | ER1_Diff <0 | ER2_Diff <0 | 
+                               ER2020_Diff <0 | ER2024_Diff <0 | ER_Diff <0, 
+                           1,0, missing = NA))
+
+
+```
+
+```{r binary condition indicator}
+
+df_trim$messageType <- as.factor(df_trim$messageType)
+df_trim$ConditionChat <- as.factor(df_trim$ConditionChat)
+df_trim$ConditionChat <- as.factor(df_trim$ConditionChat)
+
+df_trim <- df_trim %>%
+  mutate(ConditionPers = as.numeric(if_else(ConditionFeedback == "Belief & Values-Tailored", 1, 0,missing = NA)),
+         ConditionDet = as.numeric(if_else(ConditionFeedback == "Belief-Tailored", 1, 0,missing = NA)),
+         ConditionLim = as.numeric(if_else(ConditionFeedback == "Adversarial Dialogue", 1, 0,missing = NA)),
+         ConditionFeedbackNum = as.numeric(ConditionFeedback))
+
+```
+
+```{r convo cleaning}
+#remotes::install_github("hauselin/chatlogr")
+#remotes::install_github("hauselin/chatlogr")
+library(chatlogr)
+# ----------------------------------------------------------------------
+# 1. Parse Study 1 chat participants
+# ----------------------------------------------------------------------
+chatdata_s1 <- parse_users_chat_data(
+  dat = df_trim %>%
+    filter(Study == 1, ConditionChat == "Chat", !is.na(chathistory1)) %>%
+    distinct(ResponseId, .keep_all = TRUE),
+  idcol = "ResponseId",
+  chat_col_patterns = c("chathistory"),
+  join_str = '\"\"',     # Stitches long chats split across chathistory1 & 2
+  nrows = Inf            # Process all rows without random sampling!
+)
+# ----------------------------------------------------------------------
+# 2. Parse Study 2 chat participants
+# ----------------------------------------------------------------------
+chatdata_s2 <- parse_users_chat_data(
+  dat = df_trim %>%
+    filter(Study == 2, !is.na(chathistory1)) %>%
+    distinct(ResponseId, .keep_all = TRUE),
+  idcol = "ResponseId",
+  chat_col_patterns = c("chathistory"),
+  join_str = '\"\"',     # Stitches long chats split across chathistory1 & 2
+  nrows = Inf            # Process all rows without random sampling!
+)
+# Combine successful parses
+botchat <- bind_rows(chatdata_s1$df_success, chatdata_s2$df_success)
+# ----------------------------------------------------------------------
+# 3. Number rounds sequentially and pivot wider
+# ----------------------------------------------------------------------
+botchat <- botchat %>%
+  filter(id != 0, role != "system", !is.na(content), nzchar(trimws(content))) %>%
+  arrange(ResponseId, id, role) %>%
+  mutate(role = if_else(role == "assistant", "GPTResponse",
+                if_else(role == "user", "userResponse", role))) %>%
+  group_by(ResponseId, role) %>%
+  mutate(final_id = row_number()) %>%
+  ungroup() %>%
+  unite("role_id", role, final_id, sep = "_", remove = FALSE)
+botchat_wide <- botchat %>%
+  select(ResponseId, role_id, content) %>%
+  pivot_wider(names_from = role_id, values_from = content) %>%
+  distinct(ResponseId, .keep_all = TRUE)
+# Join chat dialogues back to main data
+df_trim <- df_trim %>%
+  dplyr::left_join(botchat_wide, by = "ResponseId", suffix = c("", ".chat"))
+# ----------------------------------------------
+# 4. Standardize rounds across Qualtrics & Chat
+# ----------------------------------------------
+df_trim <- df_trim %>%
+  dplyr::mutate(
+    # Construct combined claim (Conspiracy_Solicitat + Elaboration)
+    claim_combined = trimws(paste(coalesce(Conspiracy_Solicitat, ""), coalesce(Elaboration, ""))),
+    
+    # User Turns
+    userResponse_1 = if_else(
+      ConditionChat == "Chat",
+      userResponse_1,
+      if_else(!is.na(userResponse) & nzchar(userResponse), userResponse, claim_combined)
+    ),
+    userResponse_2 = if_else(ConditionChat == "Chat", userResponse_2, coalesce(userSecondResponse, Q5)),
+    userResponse_3 = if_else(ConditionChat == "Chat", userResponse_3, coalesce(userThirdResponse, Q7)),
+    userResponse_4 = if_else(ConditionChat == "Chat", userResponse_4, Q9), # <-- Q9 mapped here!
+    
+    # GPT Turns
+    GPTResponse_1 = if_else(ConditionChat == "Chat", GPTResponse_1, GPTResponse),
+    GPTResponse_2 = if_else(ConditionChat == "Chat", GPTResponse_2, GPTResponse2),
+    GPTResponse_3 = if_else(ConditionChat == "Chat", GPTResponse_3, GPTResponse3),
+    GPTResponse_4 = if_else(ConditionChat == "Chat", GPTResponse_4, NA_character_) # NA for Qualtrics
+  )
+
+
+
+df_trim <- df_trim %>%
+  dplyr::left_join(botchat %>%
+                     group_by(ResponseId) %>%
+                     filter(createdAt == max(createdAt, na.rm = TRUE)) %>%
+                     ungroup() %>%
+                     dplyr::select(ResponseId,createdAt), by = "ResponseId", suffix = c("", ".text"))
+
+summary(df_trim$createdAt/60)
+
+
+df_trim <- df_trim %>%
+  dplyr::rowwise() %>%
+  dplyr::mutate(ConvoTime = if_else(ConditionChat == "Qualtrics",sum(c(`q1_timing_Page Submit`,`q2_timing_Page Submit`,`q3_timing_Page Submit`), na.rm = TRUE)/60,
+                                    if_else(ConditionChat == "Chat",(createdAt)/60,NA_real_)))
+
+
+summary(df_trim$ConvoTime)
+```
+
+```{r relabeling, warning=FALSE}
+
+Hmisc::label(df_trim$messageType) <- "Condition"
+Hmisc::label(df_trim$ConditionChat) <- "Condition - Interface Type"
+Hmisc::label(df_trim$ConditionFeedback) <- "Condition - Feedback Type"
+
+Hmisc::label(df_trim$ER_Post) <- "Aggregate Denialism - Post"
+Hmisc::label(df_trim$ER_Post_itt) <- "Aggregate Denialism - Post"
+Hmisc::label(df_trim$ER_Pre) <- "Aggregate Denialism - Pre"
+#Hmisc::label(df_trim$ERNorm_Pre_center) <- "Aggregate Denialism - Pre"
+
+Hmisc::label(df_trim$ER0Norm_Post) <- "2020 Denialism - Post"
+Hmisc::label(df_trim$ER0Norm_Post_itt) <- "2020 Denialism - Post"
+Hmisc::label(df_trim$ER0Norm_Pre) <- "2020 Denialism - Pre"
+#Hmisc::label(df_trim$ER0Norm_Pre_center) <- "2020 Denialism - Pre"
+
+Hmisc::label(df_trim$ER1_Post) <- "General Denialism - Post"
+Hmisc::label(df_trim$ER1_Post_itt) <- "General Denialism - Post"
+Hmisc::label(df_trim$ER1_Pre) <- "General Denialism - Pre"
+#Hmisc::label(df_trim$ER1_Pre_center) <- "General Denialism - Pre"
+
+Hmisc::label(df_trim$ER2_Post) <- "Specific Denialism - Post"
+Hmisc::label(df_trim$ER2_Post_itt) <- "Specific Denialism - Post"
+Hmisc::label(df_trim$ER2_Pre) <- "Specific Denialism - Pre"
+#Hmisc::label(df_trim$ER2_Pre_center) <- "Specific Denialism - Pre"
+
+Hmisc::label(df_trim$ER2024_Post) <- "2024 Denialism - Post"
+Hmisc::label(df_trim$ER2024_Post_itt) <- "2024 Denialism - Post"
+Hmisc::label(df_trim$ER2024_Pre) <- "2024 Denialism - Pre"
+#Hmisc::label(df_trim$ER2024_Pre_center) <- "2024 Denialism - Pre"
+
+Hmisc::label(df_trim$ER2020_Post) <- "2020 Denialism - Post"
+Hmisc::label(df_trim$ER2020_Post_itt) <- "2020 Denialism - Post"
+Hmisc::label(df_trim$ER2020_Pre) <- "2020 Denialism - Pre"
+#Hmisc::label(df_trim$ER2020_Pre_center) <- "2020 Denialism - Pre"
+
+
+Hmisc::label(df_trim$Sureness_Post_1) <- "Claim Certainty - Post"
+Hmisc::label(df_trim$Sureness_Post_1_itt) <- "Claim Certainty - Post"
+Hmisc::label(df_trim$Sureness_Pre_1) <- "Claim Certainty - Pre"
+#Hmisc::label(df_trim$Sureness_Pre_center) <- "Claim Certainty - Pre"
+
+Hmisc::label(df_trim$AffPol_Post) <- "Affective Polarization - Post"
+Hmisc::label(df_trim$AffPol_Post_itt) <- "Affective Polarization - Post"
+Hmisc::label(df_trim$AffPol_Pre) <- "Affective Polarization - Pre"
+#Hmisc::label(df_trim$AffPol_Pre_center) <- "Affective Polarization - Pre"
+
+```
+
+```{r cov relabeling}
+Hmisc::label(df_trim$Age) <- "Age"
+Hmisc::label(df_trim$Education.text) <- "Highest Education"
+Hmisc::label(df_trim$EducationCategory) <- "Education"
+Hmisc::label(df_trim$GenderClean) <- "Gender"
+Hmisc::label(df_trim$religion) <- "Religiosity (0-7)"
+
+Hmisc::label(df_trim$DemRep_C) <- "Political Orientation (1-6)"
+Hmisc::label(df_trim$DemRep_C.text) <- "Political Orientation (1-6)"
+Hmisc::label(df_trim$EconomicConservatism) <- "Economic Conservatism (1-5)"
+Hmisc::label(df_trim$SocialConservatism) <- "Social Conservatism (1-5)"
+
+Hmisc::label(df_trim$VoteFor2020.text) <- "Voted for in 2020"
+Hmisc::label(df_trim$VoteFor2020.clean) <- "Voted for in 2020"
+Hmisc::label(df_trim$VoteMethod.text) <- "Voting Method in 2020"
+Hmisc::label(df_trim$Vote_1) <- "Likelihood of Voting in 2024 (0-100) (Pre)"
+Hmisc::label(df_trim$Vote_Post_1) <- "Likelihood of Voting in 2024 (0-100) (Post)"
+Hmisc::label(df_trim$lean_bidentrump_Post_4) <- "Harris vs. Trump Leaning (0 = Harris, 100 = Trump)"
+
+```
+
+```{r create dfs}
+
+df_all <- df_trim %>% 
+  filter(Study == 1 | Study == 2)
+
+  #s1 - lucid data (1.8k) - all responses, including those coded as conspiracy by NLP
+df_trim <- df_all %>%
+  dplyr::filter(
+    ScreenedDummy == 0,
+    Drop == "Keep",
+    Study == 1)
+
+  #s2 - lucid data (1.1k) - all responses, including those coded as conspiracy by NLP
+df_trim_2 <- df_all %>%
+  dplyr::filter(
+    ScreenedDummy == 0,
+    Drop == "Keep",
+    Study == 2)
+
+#FINAL DFs
+
+  #filter for those who actually stated a conspiracy based on NLP
+df_consp <- df_trim %>% filter(Conspiracy == "Conspiracy")
+df_consp_2 <- df_trim_2 %>% filter(Conspiracy == "Conspiracy")
+
+df_both <- df_all %>% 
+  filter(Study == 1 | Study == 2,
+         Conspiracy == "Conspiracy", #if nlp categorized as conspiracy; not preregistered
+         ScreenedDummy == 0,
+         Drop == "Keep")
+
+# Center the pre scores WITHIN STUDY on the final analysis dfs, so 0 = the average participant in that study's sample.
+# Base R (ave + [[<-) on purpose: keeps df_both a rowwise_df, which 05b relies on.
+pre_center_map <- c(ER0Norm_Pre_center = "ER0Norm_Pre", 
+                    Sureness_Pre_center = "Sureness_Pre_1",
+                    ER1_Pre_center = "ER1_Pre", 
+                    ER2_Pre_center = "ER2_Pre",
+                    ER2024_Pre_center = "ER2024_Pre", 
+                    ER2020_Pre_center = "ER2020_Pre",
+                    ERNorm_Pre_center = "ER_Pre", 
+                    AffPol_Pre_center = "AffPol_Pre")
+for (d in c("df_consp", "df_consp_2", "df_both")) {
+  df <- get(d)
+  for (nm in names(pre_center_map)) {
+    x <- as.numeric(df[[pre_center_map[[nm]]]])
+    df[[nm]] <- x - ave(x, df$Study, FUN = function(v) mean(v, na.rm = TRUE))
+    Hmisc::label(df[[nm]]) <- Hmisc::label(df[[pre_center_map[[nm]]]])   # same label as the raw pre score
+  }
+  assign(d, df)
+}
+
+# z-score the pre, post and change scores with the mean and SD of the analytic sample (df_both, Studies 1 and 2 pooled), so a
+# standardized coefficient is the effect in SDs of the analyzed participants. The same constants are applied to every df,
+# so the preregistered-sample and full-sample models are on the same scale. Base R again, to keep df_both a rowwise_df.
+std_vars <- c(dvs_post, dvs_pre, dvs_diff)
+for (v in std_vars) {
+  m <- mean(as.numeric(df_both[[v]]), na.rm = TRUE)
+  s <- sd(as.numeric(df_both[[v]]), na.rm = TRUE)
+  for (d in c("df_all", "df_trim", "df_trim_2", "df_consp", "df_consp_2", "df_both")) {
+    df <- get(d)
+    df[[paste0(v, "_std")]] <- (as.numeric(df[[v]]) - m) / s
+    assign(d, df)
+  }
+}
+
+#summary(df_both$ConditionCatsDogs_center)
+
+#bot check
+#df_consp$Q2 %>% str_detect("1391") %>% which()
+#df_consp_2$Q2 %>% str_detect("1391") %>% which()
+
+
+df_all %>%
+  dplyr::select(all_of(c(dvs_pre, dvs_post,dvs_diff))) %>%
+  psych::describe()
+
+```
+
+```{r deidentify for release}
+
+# Drop quasi-identifiers before anything is written to data/. None of these columns is read by 02-09 or the Shiny app
+# (StartDate, createdAt and YearOfBirth were only needed above, to assign Study, compute ConvoTime and compute Age).
+# ResponseId (the Qualtrics response ID) is kept because the coded-conversation files and the Shiny app are keyed on it.
+drop_for_release <- c("zip", "hhi", "region", "ethnicity",                                  # Lucid panel profile fields
+                      "MetaInfo_Browser", "MetaInfo_Version", "MetaInfo_Operating System", "MetaInfo_Resolution", "Q2", # device metadata
+                      "StartDate", "EndDate", "RecordedDate", "createdAt",                  # exact timestamps
+                      "YearOfBirth", "Cleaned_Year",                                        # exact birth year (Age is kept)
+                      "Comments", "alias_data")                                             # unstructured end-of-survey comments & typing JSON
+
+for (d in c("df_consp", "df_consp_2", "df_both", "df_all", "df_trim", "df_trim_2")) {
+  df <- get(d) %>%
+    dplyr::select(
+      -any_of(drop_for_release),
+      -any_of(c(
+        "screener3",
+        "activeConditionNumber", "embedsystemMessage", "ChatbotPromptTemplate", "systemMessageTemplate",
+        "PartyAffil_4_TEXT", "PartyReg_4_TEXT", "VoteMethod_4_TEXT", "Vote2024_Pre_2_TEXT",
+        "Demog_14", "Demog_14.text", "Demog_14_11_TEXT", "Demog_14_11_TEXT.text",
+        "education", "hispanic", "Hispanic", "Hispanic.text", "political_party",
+        "EconomicConservatism.text", "SocialConservatism.text", "VoteFor2020.text",
+        "principles", "MagicPill_5_TEXT",
+        "userResponse_pt1", "userResponse_pt2", "userResponse",
+        "userSecondResponse", "userThirdResponse",
+        "GPTResponse", "GPTResponse2", "GPTResponse3",
+        "userResponse_5", "GPTResponse_5",
+        "ConditionChat_center", "Condition_center", "missing",
+        "DemRep_C.text", "PartyAffil.text", "PartyReg.text", "VoteMethod.text",
+        "UserLanguage", "Captcha", "nicks", "messageTypeOG", "Q_TerminateFlag", "model",
+        "age", "gender", "Gender"
+      )),
+      -matches("^NewsSources.*\\.text$")
+    )
+  if (all(c("screener3_1", "screener3_9_TEXT") %in% names(df))) df <- df %>% dplyr::select(-c(screener3_1:screener3_9_TEXT))
+  if (all(c("Q5", "chathistory4") %in% names(df))) df <- df %>% dplyr::select(-c(Q5:chathistory4))
+  assign(d, df)
+}
+
+# Apply free-text PII redactions (masking identified spans with [REDACTED])
+rules_path <- here::here("scripts", "redaction_rules.csv")
+if (file.exists(rules_path)) {
+  rules <- read.csv(rules_path, stringsAsFactors = FALSE)
+  for (d in c("df_consp", "df_consp_2", "df_both", "df_all", "df_trim", "df_trim_2")) {
+    df <- get(d)
+    for (i in seq_len(nrow(rules))) {
+      id  <- rules$id[i]
+      col <- rules$col[i]
+      old <- rules$old_pattern[i]
+      rep <- rules$replacement[i]
+      if (col %in% names(df)) {
+        match_idx <- which(df$ResponseId == id)
+        if (length(match_idx) > 0) {
+          val <- df[[col]][match_idx]
+          if (!is.na(val) && grepl(old, val, fixed = TRUE)) {
+            df[[col]][match_idx] <- gsub(old, rep, val, fixed = TRUE)
+          }
+        }
+      }
+    }
+    assign(d, df)
+  }
+}
+
+```
+
+```{r export data}
+
+#convos <- df_trim %>%
+#  dplyr::select(ResponseId,WritingScreener,Conspiracy_Solicitat:Elaboration,messageType,GPTResponse,GPTResponse2,GPTResponse3,userResponse,userSecondResponse,userThirdResponse,chathistory1,chathistory2,chathistory3,chathistory4,PrimaryValuesCategory,ValuesCategory)
+
+#save as RData
+save(df_consp, df_consp_2,df_both, #nlp categorized election conspiracies
+     df_all, #full df both studies
+     df_trim,df_trim_2, #full df
+     #df_convos, #df for both studies with responses that have full convos only
+     file = here::here("data", "clean_dfs.RData"))
+
+#save as excel file
+wb <- createWorkbook()
+
+addWorksheet(wb,"s1-data-consp")
+writeData(wb,"s1-data-consp",df_consp)
+
+addWorksheet(wb,"s2-data-consp")
+writeData(wb,"s2-data-consp",df_consp_2)
+
+saveWorkbook(wb, here::here("data", "df_clean.xlsx"), overwrite = T)
+
+```

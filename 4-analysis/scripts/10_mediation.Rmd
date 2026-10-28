@@ -1,0 +1,793 @@
+---
+title: "06. Dialogues on Democracy: Mediation Analysis"
+author: "Shaye"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    df_print: paged
+    code_folding: hide
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+---
+
+# Mediation Analysis
+## Admin
+```{r clear workspace, include=FALSE}
+rm(list=ls())
+getwd()
+options(scipen=1, digits=4)
+
+```
+
+```{r packages & wd, include=FALSE}
+# Housekeeping: this is where I load libraries, packages, set my working directory, specify variables I'll use throughout (e.g., CAH colors), read in data files
+
+#install.packages(c("devtools", "lme4"))
+#install.packages("netmeta", dependencies = TRUE)
+#install.packages("psychTools", dependencies = TRUE)
+
+library(tidyverse)
+library(ggplot2)
+library(Hmisc)
+library(here)
+library(lavaan)
+library(lavaanPlot)
+library(rempsyc)
+
+#install.packages("groundhog")
+#library("groundhog")
+#pkgs <- c("rio","metafor")
+#groundhog.library(pkgs, "2025-01-01")
+
+
+local({
+  if (!file.exists(".here") && !file.exists("../.here")) {
+    p <- tryCatch(rstudioapi::getSourceEditorContext()$path, error = function(e) "")
+    if (nzchar(p)) setwd(dirname(p))
+  }
+  here::i_am("scripts/10_mediation.Rmd")
+})
+
+knitr::opts_knit$set(root.dir = here::here())  # relative paths (data/, results/, figures/) resolve to 4-analysis/ when knitting
+setwd(here::here())
+set.seed(42)  # the lavaan fits below use 10,000 bootstrap draws each
+```
+
+```{r load cleaned data}
+
+load("data/clean_dfs.RData")
+
+df_all <- ungroup(df_all)
+df_both <- ungroup(df_both)
+df_consp <- ungroup(df_consp)
+df_consp_2 <- ungroup(df_consp_2)
+df_trim <- ungroup(df_trim)
+df_trim_2 <- ungroup(df_trim_2)
+
+```
+
+## 3. Mediation
+```{r 3. gabriela mediation model functions}
+
+#does change in specific claim they made mediate effect on change in 2020 denialism
+#does change in specific claim they made mediate effect on change in 2024 denialism
+
+#1. x = message type, m = change in specific claim, y = change in 2020 denialism (ER0_Diff)
+
+#2a. x = message type (ConditionFeedback), m = change in 2020 denialism (ER0_Diff), y = change in specific claim (Sureness_Diff)
+#2b. x = message type (ConditionFeedback), m = change in 2024 denialism (ER2024_Diff), y = change in specific claim (Sureness_Diff)
+
+#did it also extend to related beliefs: general (no), 2024 (no) mediation analysis: if change updates broader beliefs in elections - 2024 mediated by claim change, 2020 mediated by claim change
+
+# flip around outcome & look at if it changes anything
+
+# Combine non-Limited levels into one group
+
+
+#2020 MEDIATION----
+#define models
+  #detailed feedback condition vs limited
+model <- '
+# paths
+Sureness_Diff ~ a * ConditionDet #x = Condition
+ER0_Diff ~ b * Sureness_Diff #m = Sureness_Diff
+ER0_Diff ~ c * ConditionDet #y = 2020 denialism
+
+# indirect effect (a * b)
+indirect := a * b
+# total effect
+total := c + (a * b)
+'
+
+  #values-tailored condition vs limited
+model2 <- '
+# paths
+Sureness_Diff ~ a * ConditionPers
+ER0_Diff ~ b * Sureness_Diff
+ER0_Diff ~ c * ConditionPers
+
+# indirect effect (a * b)
+indirect := a * b
+# total effect
+total := c + (a * b)
+'
+
+  #limited vs cats & dogs
+model3 <- '
+# paths
+Sureness_Diff ~ a * ConditionLim
+ER0_Diff ~ b * Sureness_Diff
+ER0_Diff ~ c * ConditionLim
+
+# indirect effect (a * b)
+indirect := a * b
+# total effect
+total := c + (a * b)
+'
+
+  #detailed vs cats & dogs
+model4 <- '
+# paths
+Sureness_Diff ~ a * ConditionDet
+ER0_Diff ~ b * Sureness_Diff
+ER0_Diff ~ c * ConditionDet
+
+# indirect effect (a * b)
+indirect := a * b
+# total effect
+total := c + (a * b)
+'
+
+
+#2024 MEDIATION----
+#define models
+
+  #detailed vs lim
+model.2024 <- '
+# paths
+Sureness_Diff ~ a * ConditionDet
+ER2024_Diff ~ b * Sureness_Diff
+ER2024_Diff ~ c * ConditionDet
+
+# indirect effect (a * b)
+indirect := a * b
+# total effect
+total := c + (a * b)
+'
+
+  #pers vs lim
+model2.2024 <- '
+# paths
+Sureness_Diff ~ a * ConditionPers
+ER2024_Diff ~ b * Sureness_Diff
+ER2024_Diff ~ c * ConditionPers
+
+# indirect effect (a * b)
+indirect := a * b
+# total effect
+total := c + (a * b)
+'
+
+  #limited vs cats & dogs
+model3.2024 <- '
+# paths
+Sureness_Diff ~ a * ConditionLim
+ER2024_Diff ~ b * Sureness_Diff
+ER2024_Diff ~ c * ConditionLim
+
+# indirect effect (a * b)
+indirect := a * b
+# total effect
+total := c + (a * b)
+'
+
+  #detailed vs cats & dogs
+model4.2024 <- '
+# paths
+Sureness_Diff ~ a * ConditionDet
+ER2024_Diff ~ b * Sureness_Diff
+ER2024_Diff ~ c * ConditionDet
+
+# indirect effect (a * b)
+indirect := a * b
+# total effect
+total := c + (a * b)
+'
+
+```
+
+### Models
+```{r set up}
+
+# ConditionDet/ConditionPers/ConditionLim/ConditionFeedbackNum already come
+# pre-built and correct on the cleaned data (against the current
+# ConditionFeedback labels: "Belief-Tailored", "Belief & Values-Tailored",
+# "Adversarial Dialogue", "Control") - no need to recompute them here
+
+Hmisc::label(df_consp$messageType) <- "Condition"
+Hmisc::label(df_consp_2$messageType) <- "Condition"
+df_consp$messageType <- as.factor(df_consp$messageType)
+df_consp_2$messageType <- as.factor(df_consp_2$messageType)
+df_consp$ConditionChat <- as.factor(df_consp$ConditionChat)
+df_consp_2$ConditionChat <- as.factor(df_consp_2$ConditionChat)
+
+table(df_both$ConditionFeedback)
+
+```
+
+```{r 3. 2020 mediation SEM models}
+
+#STUDY 1 MODELS----
+#2020 fit models
+# fit pure-control vs. treatment
+  #TO DO: PLAY WITH BOOTSTRAPPING TO SEE HOW THAT IMPACTS RESULTS
+  #S1
+    #1. detailed vs limited
+fit_det.s1 <- sem(model,
+                    data = df_consp %>% filter(ConditionFeedback != "Belief & Values-Tailored" & !(is.na(ConditionFeedback))), 
+                    estimator = "ML",
+                    test = "bollen.stine", se = "boot", bootstrap = 10000)
+summary(fit_det.s1)
+fit_det.s1_params <- parameterestimates(fit_det.s1, standardized = T, boot.ci.type = "bca.simple")
+fit_det.s1_params #%>% filter(lhs == "indirect" | lhs == "total")
+nice_table(fit_det.s1_params)
+
+#library(tidySEM)
+#tidySEM::graph_sem(fit_det.s1)
+
+    #2. personalized vs limited
+fit_pers.s1 <- sem(model2,
+                    data = df_consp %>% filter(ConditionFeedback != "Belief-Tailored" & !(is.na(ConditionFeedback))), 
+                    estimator = "ML",
+                    test = "bollen.stine", se = "boot", bootstrap = 10000)
+summary(fit_pers.s1)
+fit_pers.s1_params <- parameterestimates(fit_pers.s1, standardized = T, boot.ci.type = "bca.simple")
+fit_pers.s1_params #%>% filter(lhs == "indirect" | lhs == "total")
+#nice_table(fit_pers.s1)
+#report(fit_pers.s1_params)
+
+
+
+  #S2
+    #1. detailed vs limited
+fit_det.s2 <- sem(model,
+                    data = df_consp_2 %>% filter(ConditionFeedback != "Control" & !(is.na(ConditionFeedback))), 
+                    estimator = "ML",
+                    test = "bollen.stine", se = "boot", bootstrap = 10000)
+summary(fit_det.s2)
+fit_det.s2_params <- parameterestimates(fit_det.s2, standardized = T, boot.ci.type = "bca.simple")
+fit_det.s2_params #%>% filter(lhs == "indirect" | lhs == "total")
+
+
+  #3. detailed vs cats & dogs
+fit_detcd.s2 <- sem(model,
+                    data = df_consp_2 %>% filter(ConditionFeedback != "Adversarial Dialogue" & !(is.na(ConditionFeedback))), 
+                    estimator = "ML",
+                    test = "bollen.stine", se = "boot", bootstrap = 10000)
+summary(fit_detcd.s2)
+fit_detcd.s2_params <- parameterestimates(fit_detcd.s2, standardized = T, boot.ci.type = "bca.simple")
+fit_detcd.s2_params #%>% filter(lhs == "indirect" | lhs == "total")
+
+
+  #2. limited vs cats & dogs
+fit_limcd.s2 <- sem(model3,
+                    data = df_consp_2 %>% filter(ConditionFeedback != "Belief-Tailored" & !(is.na(ConditionFeedback))), 
+                    estimator = "ML",
+                    test = "bollen.stine", se = "boot", bootstrap = 10000)
+summary(fit_limcd.s2)
+fit_limcd.s2_params <- parameterestimates(fit_limcd.s2, standardized = T, boot.ci.type = "bca.simple")
+fit_limcd.s2_params #%>% filter(lhs == "indirect" | lhs == "total")
+
+
+table(df_consp_2$ConditionFeedback)
+
+
+
+  #BOTH STUDIES
+  #detailed vs limited
+fit_det <- sem(model, 
+               data = df_both %>% filter(ConditionFeedback != "Control" & !(is.na(ConditionFeedback)) & ConditionFeedback != "Belief & Values-Tailored"), 
+                    estimator = "ML",
+                    test = "bollen.stine", se = "boot", bootstrap = 10000)
+summary(fit_det)
+fit_det_params <- parameterestimates(fit_det, standardized = T, boot.ci.type = "bca.simple")
+fit_det_params
+
+
+```
+
+```{r 3. 2024 mediation SEM models}
+
+#S1 fit models
+  #1. detailed vs limited
+fit_det.s1.2024 <- sem(model.2024,
+                    data = df_consp %>% filter(ConditionFeedback != "Belief & Values-Tailored" & !(is.na(ConditionFeedback))), 
+                    estimator = "ML",
+                    test = "bollen.stine", se = "boot", bootstrap = 10000)
+summary(fit_det.s1.2024)
+fit_det.s1_params.2024 <- parameterestimates(fit_det.s1.2024, standardized = T, boot.ci.type = "bca.simple")
+fit_det.s1_params.2024 #%>% filter(lhs == "indirect" | lhs == "total")
+
+
+  #2. personalized vs limited
+fit_pers.s1.2024 <- sem(model2.2024,
+                    data = df_consp %>% filter(ConditionFeedback != "Belief-Tailored" & !(is.na(ConditionFeedback))), 
+                    estimator = "ML",
+                    test = "bollen.stine", se = "boot", bootstrap = 10000)
+summary(fit_pers.s1.2024)
+fit_pers.s1_params.2024 <- parameterestimates(fit_pers.s1.2024, standardized = T, boot.ci.type = "bca.simple")
+fit_pers.s1_params.2024 #%>% filter(lhs == "indirect" | lhs == "total")
+
+
+  #S2
+  #1. detailed vs limited
+fit_det.s2.2024 <- sem(model.2024,
+                    data = df_consp_2 %>% filter(ConditionFeedback != "Control" & !(is.na(ConditionFeedback))), 
+                    estimator = "ML",
+                    test = "bollen.stine", se = "boot", bootstrap = 10000)
+summary(fit_det.s2.2024)
+fit_det.s2_params.2024 <- parameterestimates(fit_det.s2.2024, standardized = T, boot.ci.type = "bca.simple")
+fit_det.s2_params.2024 #%>% filter(lhs == "indirect" | lhs == "total")
+
+
+  #1. limited vs cats & dogs
+fit_limcd.s2.2024 <- sem(model3.2024,
+                    data = df_consp_2 %>% filter(ConditionFeedback != "Belief-Tailored" & !(is.na(ConditionFeedback))), 
+                    estimator = "ML",
+                    test = "bollen.stine", se = "boot", bootstrap = 10000)
+summary(fit_limcd.s2.2024)
+fit_limcd.s2_params.2024 <- parameterestimates(fit_limcd.s2.2024, standardized = T, boot.ci.type = "bca.simple")
+fit_limcd.s2_params.2024 #%>% filter(lhs == "indirect" | lhs == "total")
+
+
+  #2. detailed vs cats & dogs
+fit_detcd.s2.2024 <- sem(model4.2024,
+                    data = df_consp_2 %>% filter(ConditionFeedback != "Adversarial Dialogue" & !(is.na(ConditionFeedback))), 
+                    estimator = "ML",
+                    test = "bollen.stine", se = "boot", bootstrap = 10000)
+summary(fit_detcd.s2.2024)
+fit_detcd.s2_params.2024 <- parameterestimates(fit_detcd.s2.2024, standardized = T, boot.ci.type = "bca.simple")
+fit_detcd.s2_params.2024 #%>% filter(lhs == "indirect" | lhs == "total")
+
+
+  #BOTH STUDIES
+  #detailed vs limited
+fit_det.2024 <- sem(model.2024,
+                    data = df_both %>% filter(ConditionFeedback != "Control" & !(is.na(ConditionFeedback)) & ConditionFeedback != "Belief & Values-Tailored"), 
+                    estimator = "ML",
+                    test = "bollen.stine", se = "boot", bootstrap = 10000)
+summary(fit_det.2024)
+fit_det_params.2024 <- parameterestimates(fit_det.2024, standardized = T, boot.ci.type = "bca.simple")
+fit_det_params.2024 #%>% filter(lhs == "indirect" | lhs == "total")
+
+
+```
+
+### Sensitivity Analysis (Sequential Ignorability)
+
+The SEM mediation models above identify the indirect effect under **sequential
+ignorability**: no unmeasured confounding of the mediator (`Sureness_Diff`) -
+outcome path, over and above random assignment of condition. This is not
+guaranteed by randomization (only the condition -> mediator and condition ->
+outcome paths are), and is typically implausible on its face. Following Imai,
+Keele, & Yamamoto (2010), we assess how large an unobserved mediator-outcome
+confound (parameterized as a residual correlation, rho, between the mediator
+and outcome equations) would have to be to drive the indirect effect to zero.
+rho = 0 reproduces the models above; the "tipping point" rho* is the value at
+which the indirect effect crosses zero. A small |rho*| means a small amount of
+unobserved confounding would overturn the result; a large |rho*| means the
+result is robust to all but implausibly large confounding.
+
+```{r save mediation results for supplement, include=FALSE}
+# Path estimates for Supplement Table E1 (5-disseminate/supplement.qmd reads this file).
+# NB: the fits above use 10,000 bootstrap draws each, so this script takes over an hour; the saved file only changes
+# when this script is re-run.
+med_fits <- c("fit_det", "fit_det.s1", "fit_pers.s1", "fit_det.s2", "fit_detcd.s2", "fit_limcd.s2")
+dir.create("results", showWarnings = FALSE)
+saveRDS(list(
+  params_2020 = setNames(mget(paste0(med_fits, "_params")), med_fits),
+  params_2024 = setNames(mget(paste0(med_fits, "_params.2024")), med_fits),
+  n = vapply(med_fits, function(f) lavaan::nobs(get(f)), numeric(1))
+), "results/mediation_params.rds")
+```
+
+```{r sensitivity analysis - sequential ignorability, warning=FALSE}
+
+sem_mediation_sensitivity <- function(model_syntax, data, m_var, y_var,
+                                       rho_grid = seq(-0.9, 0.9, by = 0.05),
+                                       estimator = "ML") {
+
+  # baseline (rho = 0, lavaan's default) supplies the residual SDs used to
+  # convert each candidate correlation into covariance units below
+  fit0 <- sem(model_syntax, data = data, estimator = estimator)
+  pe0 <- parameterestimates(fit0)
+  var_m <- pe0$est[pe0$lhs == m_var & pe0$rhs == m_var & pe0$op == "~~"]
+  var_y <- pe0$est[pe0$lhs == y_var & pe0$rhs == y_var & pe0$op == "~~"]
+  sd_m <- sqrt(var_m); sd_y <- sqrt(var_y)
+
+  purrr::map_dfr(rho_grid, function(rho) {
+    cov_val <- rho * sd_m * sd_y
+    # fix the mediator-outcome residual covariance at the value implied by
+    # this rho, and let a, b, c re-estimate freely around that constraint
+    sens_syntax <- paste0(model_syntax, "\n", m_var, " ~~ ", cov_val, "*", y_var, "\n")
+    fit <- tryCatch(
+      sem(sens_syntax, data = data, estimator = estimator, se = "standard"),
+      error = function(e) NULL
+    )
+    if (is.null(fit) || !lavInspect(fit, "converged")) {
+      return(tibble(rho = rho, indirect = NA_real_, se = NA_real_))
+    }
+    pe <- parameterestimates(fit)
+    ind <- pe[pe$lhs == "indirect" & pe$op == ":=", ]
+    tibble(rho = rho, indirect = ind$est, se = ind$se)
+  })
+}
+
+find_tipping_rho <- function(sens_df) {
+  sens_df <- sens_df %>% filter(!is.na(indirect)) %>% arrange(rho)
+  sign_change <- which(diff(sign(sens_df$indirect)) != 0)
+  if (length(sign_change) == 0) return(NA_real_)
+  i <- sign_change[1]
+  x1 <- sens_df$rho[i]; x2 <- sens_df$rho[i + 1]
+  y1 <- sens_df$indirect[i]; y2 <- sens_df$indirect[i + 1]
+  x1 + (0 - y1) * (x2 - x1) / (y2 - y1)  # linear interpolation to the zero crossing
+}
+
+plot_sensitivity <- function(sens_df, title) {
+  tipping <- find_tipping_rho(sens_df)
+  p <- ggplot(sens_df, aes(x = rho, y = indirect)) +
+    geom_line() +
+    geom_point(size = 1) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+    labs(title = title,
+         subtitle = if (!is.na(tipping)) paste0("Indirect effect = 0 at rho* = ", round(tipping, 2))
+                    else "Indirect effect does not cross zero for rho in [-0.9, 0.9]",
+         x = expression(rho ~ "(assumed mediator-outcome residual correlation)"),
+         y = "Estimated indirect effect (a*b)") +
+    theme_minimal()
+  if (!is.na(tipping)) p <- p + geom_vline(xintercept = tipping, linetype = "dotted", color = "firebrick")
+  p
+}
+
+# 2020, detailed vs. limited (both studies pooled) - primary headline comparison
+sens_det_2020 <- sem_mediation_sensitivity(
+  model,
+  data = df_both %>% filter(ConditionFeedback != "Control" & !(is.na(ConditionFeedback)) & ConditionFeedback != "Belief & Values-Tailored"),
+  m_var = "Sureness_Diff", y_var = "ER0_Diff"
+)
+plot_sensitivity(sens_det_2020, "Detailed vs. Limited -> 2020 Denialism (Studies 1+2)")
+
+# 2020, personalized vs. limited (Study 1 only - Study 2 has no Values-Tailored arm)
+sens_pers_2020 <- sem_mediation_sensitivity(
+  model2,
+  data = df_consp %>% filter(ConditionFeedback != "Belief-Tailored" & !(is.na(ConditionFeedback))),
+  m_var = "Sureness_Diff", y_var = "ER0_Diff"
+)
+plot_sensitivity(sens_pers_2020, "Personalized vs. Limited -> 2020 Denialism (Study 1)")
+
+# 2024, detailed vs. limited (both studies pooled)
+sens_det_2024 <- sem_mediation_sensitivity(
+  model.2024,
+  data = df_both %>% filter(ConditionFeedback != "Control" & !(is.na(ConditionFeedback)) & ConditionFeedback != "Belief & Values-Tailored"),
+  m_var = "Sureness_Diff", y_var = "ER2024_Diff"
+)
+plot_sensitivity(sens_det_2024, "Detailed vs. Limited -> 2024 Denialism (Studies 1+2)")
+
+# 2024, personalized vs. limited (Study 1 only)
+sens_pers_2024 <- sem_mediation_sensitivity(
+  model2.2024,
+  data = df_consp %>% filter(ConditionFeedback != "Belief-Tailored" & !(is.na(ConditionFeedback))),
+  m_var = "Sureness_Diff", y_var = "ER2024_Diff"
+)
+plot_sensitivity(sens_pers_2024, "Personalized vs. Limited -> 2024 Denialism (Study 1)")
+
+# Summary: tipping-point rho* for each core comparison, for the manuscript text/table
+sensitivity_summary <- tibble(
+  comparison = c("Detailed vs. Limited -> 2020 (S1+S2)",
+                 "Personalized vs. Limited -> 2020 (S1)",
+                 "Detailed vs. Limited -> 2024 (S1+S2)",
+                 "Personalized vs. Limited -> 2024 (S1)"),
+  rho_star = c(find_tipping_rho(sens_det_2020),
+               find_tipping_rho(sens_pers_2020),
+               find_tipping_rho(sens_det_2024),
+               find_tipping_rho(sens_pers_2024))
+)
+sensitivity_summary
+
+```
+
+### Figures
+```{r 3. mediation figs}
+
+labels <- list(
+  ConditionDet = "Detailed vs. Limited", 
+  Sureness_Diff = "Change in Specific Claim",
+  ER0_Diff = "Change in 2020 Denialism")
+
+labels2 <- list(
+  ConditionPers = "Personalized vs. Limited", 
+  Sureness_Diff = "Change in Specific Claim",
+  ER0_Diff = "Change in 2020 Denialism")
+
+labels3 <- list(
+  ConditionDet = "Detailed vs. Cats & Dogs", 
+  Sureness_Diff = "Change in Specific Claim",
+  ER0_Diff = "Change in 2020 Denialism")
+
+labels4 <- list(
+  ConditionLim = "Limited vs. Cats & Dogs", 
+  Sureness_Diff = "Change in Specific Claim",
+  ER0_Diff = "Change in 2020 Denialism")
+
+
+labels.2024 <- list(
+  ConditionDet = "Detailed vs. Limited", 
+  Sureness_Diff = "Change in Specific Claim",
+  ER2024_Diff = "Change in 2024 Denialism")
+
+labels2.2024 <- list(
+  ConditionPers = "Personalized vs. Limited", 
+  Sureness_Diff = "Change in Specific Claim",
+  ER2024_Diff = "Change in 2024 Denialism")
+
+labels3.2024 <- list(
+  ConditionDet = "Detailed vs. Cats & Dogs", 
+  Sureness_Diff = "Change in Specific Claim",
+  ER2024_Diff = "Change in 2024 Denialism")
+
+labels4.2024 <- list(
+  ConditionLim = "Limited vs. Cats & Dogs", 
+  Sureness_Diff = "Change in Specific Claim",
+  ER2024_Diff = "Change in 2024 Denialism")
+
+# 2020 plots----
+#det vs lim
+lavaanPlot(model = fit_det.s1,
+           labels = labels,
+           coefs = TRUE,           # Show the coefficients on the paths
+           stand = TRUE,           # Show standardized estimates (optional)
+           #sig = 0.05,             # Show only significant paths (optional)
+           graph_options = list(rankdir = "LR"), 
+           node_options = list(shape = "box", fontname = "Helvetica"), 
+           edge_options = list(color = "grey"), stars = c("regress"))
+
+lavaanPlot(model = fit_det.s2,
+           labels = labels,
+           coefs = TRUE,           # Show the coefficients on the paths
+           stand = TRUE,           # Show standardized estimates (optional)
+           #sig = 0.05,             # Show only significant paths (optional)
+           graph_options = list(rankdir = "LR"), 
+           node_options = list(shape = "box", fontname = "Helvetica"), 
+           edge_options = list(color = "grey"), stars = c("regress"))
+
+#both studies
+lavaanPlot(model = fit_det,
+           labels = labels,
+           coefs = TRUE,           # Show the coefficients on the paths
+           stand = TRUE,           # Show standardized estimates (optional)
+           #sig = 0.05,             # Show only significant paths (optional)
+           graph_options = list(rankdir = "LR"), 
+           node_options = list(shape = "box", fontname = "Helvetica"), 
+           edge_options = list(color = "grey"), stars = c("regress"))
+
+
+#s1 - pers vs lim
+lavaanPlot(model = fit_pers.s1,
+           labels = labels2,
+           coefs = TRUE,           # Show the coefficients on the paths
+           stand = TRUE,           # Show standardized estimates (optional)
+           #sig = 0.05,             # Show only significant paths (optional)
+           graph_options = list(rankdir = "LR"), 
+           node_options = list(shape = "box", fontname = "Helvetica"), 
+           edge_options = list(color = "grey"), stars = c("regress"))  # Layout from left to right
+
+
+#s2 - det vs cats dogs
+lavaanPlot(model = fit_detcd.s2,
+           labels = labels3,
+           coefs = TRUE,           # Show the coefficients on the paths
+           stand = TRUE,           # Show standardized estimates (optional)
+           #sig = 0.05,             # Show only significant paths (optional)
+           graph_options = list(rankdir = "LR"), 
+           node_options = list(shape = "box", fontname = "Helvetica"), 
+           edge_options = list(color = "grey"), stars = c("regress"))
+
+#s2 - lim vs cats dogs
+lavaanPlot(model = fit_limcd.s2,
+           labels = labels4,
+           coefs = TRUE,           # Show the coefficients on the paths
+           stand = TRUE,           # Show standardized estimates (optional)
+           #sig = 0.05,             # Show only significant paths (optional)
+           graph_options = list(rankdir = "LR"), 
+           node_options = list(shape = "box", fontname = "Helvetica"), 
+           edge_options = list(color = "grey"), stars = c("regress"))
+
+
+
+# 2024 plots----
+
+#det vs limited
+lavaanPlot(model = fit_det.s1.2024,
+           labels = labels.2024,
+           coefs = TRUE,           # Show the coefficients on the paths
+           stand = TRUE,           # Show standardized estimates (optional)
+           #sig = 0.05,             # Show only significant paths (optional)
+           graph_options = list(rankdir = "LR"), 
+           node_options = list(shape = "box", fontname = "Helvetica"), 
+           edge_options = list(color = "grey"), stars = c("regress"))
+
+lavaanPlot(model = fit_det.s2.2024,
+           labels = labels.2024,
+           coefs = TRUE,           # Show the coefficients on the paths
+           stand = TRUE,           # Show standardized estimates (optional)
+           #sig = 0.05,             # Show only significant paths (optional)
+           graph_options = list(rankdir = "LR"), 
+           node_options = list(shape = "box", fontname = "Helvetica"), 
+           edge_options = list(color = "grey"), stars = c("regress"))
+
+#both studies
+lavaanPlot(model = fit_det.2024,
+           labels = labels.2024,
+           coefs = TRUE,           # Show the coefficients on the paths
+           stand = TRUE,           # Show standardized estimates (optional)
+           #sig = 0.05,             # Show only significant paths (optional)
+           graph_options = list(rankdir = "LR"), 
+           node_options = list(shape = "box", fontname = "Helvetica"), 
+           edge_options = list(color = "grey"), stars = c("regress"))
+
+
+
+#s1 - pers vs lim
+lavaanPlot(model = fit_pers.s1.2024,
+           labels = labels2.2024,
+           coefs = TRUE,           # Show the coefficients on the paths
+           stand = TRUE,           # Show standardized estimates (optional)
+           #sig = 0.05,             # Show only significant paths (optional)
+           graph_options = list(rankdir = "LR"), 
+           node_options = list(shape = "box", fontname = "Helvetica"), 
+           edge_options = list(color = "grey"), stars = c("regress"))  # Layout from left to right
+
+
+#s2 - det vs cats dogs
+lavaanPlot(model = fit_detcd.s2.2024,
+           labels = labels3.2024,
+           coefs = TRUE,           # Show the coefficients on the paths
+           stand = TRUE,           # Show standardized estimates (optional)
+           #sig = 0.05,             # Show only significant paths (optional)
+           graph_options = list(rankdir = "LR"), 
+           node_options = list(shape = "box", fontname = "Helvetica"), 
+           edge_options = list(color = "grey"), stars = c("regress"))
+
+#s2 - lim vs cats dogs
+lavaanPlot(model = fit_limcd.s2.2024,
+           labels = labels4.2024, 
+           coefs = TRUE,           # Show the coefficients on the paths
+           stand = TRUE,           # Show standardized estimates (optional)
+           #sig = 0.05,             # Show only significant paths (optional)
+           graph_options = list(rankdir = "LR"), 
+           node_options = list(shape = "box", fontname = "Helvetica"), 
+           edge_options = list(color = "grey"), stars = c("regress"))
+
+
+#try saving as image then putting elsewhere
+
+```
+
+```{r saving mediation plots - no, eval=FALSE, include=FALSE}
+
+library(ggdag)
+library(ggplot2)
+
+# Convert the lavaan model parameters to DAG format
+dag1 <- dagify(Sureness_Diff ~ ConditionDet, 
+               ER0_Diff ~ Sureness_Diff + ConditionDet, 
+               labels = c("ConditionDet" = "Detailed Feedback", "Sureness_Diff" = "Change in Specific Claim", "ER0_Diff" = "Change in 2020 Denialism"))
+
+dag2 <- dagify(Sureness_Diff ~ ConditionPers, 
+               ER0_Diff ~ Sureness_Diff + ConditionPers, 
+               labels = c("ConditionPers" = "Personalized Feedback", "Sureness_Diff" = "Change in Specific Claim", "ER0_Diff" = "Change in 2020 Denialism"))
+
+# Combine the two models into one plot
+ggdag(dag1) + ggdag(dag2)
+
+
+library(lavaan)
+library(ggplot2)
+
+# You will need to extract the model coefficients and add them manually
+fit_det.s1_params <- parameterestimates(fit_det.s1, standardized = TRUE)
+fit_pers.s1_params <- parameterestimates(fit_pers.s1, standardized = TRUE)
+fit_all.s1_params <- parameterestimates(fit_all.s1, standardized = TRUE)
+
+# Example of combining all parameter estimates (you can plot paths separately if needed)
+# Create a combined data frame
+combined_params <- rbind(fit_det.s1_params, fit_pers.s1_params, fit_all.s1_params)
+
+# Now plot using ggplot2
+ggplot(combined_params, aes(x = lhs, y = rhs, size = est)) +
+  geom_point() +
+  geom_text(aes(label = label), vjust = -0.5) +
+  facet_wrap(~ model)  # Optional, if you want to separate by models
+
+
+library(gridExtra)
+
+# Create your plot objects
+p.meddet.2020 <- lavaanPlot(model = fit_det.s1, labels = labels, coefs = TRUE, ...)
+p.medpers.2020 <- lavaanPlot(model = fit_pers.s1, labels = labels2, coefs = TRUE, ...)
+p.medall.2020 <- lavaanPlot(model = fit_all.s1, labels = labels3, coefs = TRUE, ...)
+
+# Combine all the plots into one figure
+grid.arrange(p.meddet.2020, p.medpers.2020, ncol = 2)
+
+
+
+lavaanPlot(c(fit_pers.s1.2024,fit_pers.s1))
+ 
+library(gridExtra)
+library(grid)
+
+as_ggplot(p.meddet.2020)
+
+ggarrange(p.meddet.2020,p.medpers.2020,
+          p.meddet.2024,p.medpers.2024)
+
+library(patchwork)
+(p.meddet.2020 | p.medpers.2020) / (p.meddet.2024 | p.medpers.2024)
+
+
+# Convert the grVizhtmlwidget objects to grobs
+g1 <- grid::grobTree(p.meddet.2020)
+g2 <- grid::grobTree(p.medpers.2020)
+g3 <- grid::grobTree(p.meddet.2024)
+g4 <- grid::grobTree(p.medpers.2024)
+
+# Now use grid.arrange to arrange the grobs
+grid.arrange(g1, g2, g3, g4, ncol = 2)
+
+
+grid.arrange(p.meddet.2020,p.medpers.2020,p.meddet.2024,p.medpers.2024)  # Adjust ncol or nrow as needed
+?grid.arrange
+
+# If these are grVizhtmlwidget objects, try directly arranging them:
+grid.arrange(gtable::gtable(p.meddet.2020), gtable::gtable(p.medpers.2020), 
+             gtable::gtable(p.meddet.2024), gtable::gtable(p.medpers.2024), ncol = 2)
+
+
+library(htmltools)
+# Create an HTML widget layout
+browsable(tagList(
+  p.meddet.2020, p.medpers.2020, p.meddet.2024, p.medpers.2024
+))
+
+install.packages("cowplot")
+library(cowplot)
+
+# Combine plots
+plot_grid(p.meddet.2020,p.medpers.2020, ncol = 2)
+
+install.packages("ggpubr")
+library(ggpubr)
+
+# Combine plots
+ggarrange(p.meddet.2020,p.medpers.2020, ncol = 2)
+
+par(mfrow = c(2, 2))  # 1 row, 2 columns
+plot(p.meddet.2020)
+plot(p.medpers.2020)
+plot(p.meddet.2024)
+plot(p.medpers.2024)
+
+
+# Save the first plot to a PNG file
+png("figures/_intermediate/p.meddet.2020.png", width = 800, height = 600)
+lavaanPlot(fit_det.s1)  # Replace with your actual plot object
+dev.off()
+
+# Save the second plot to a PNG file
+png("figures/_intermediate/plot2.png", width = 800, height = 600)
+lavaanPlot(fit2)  # Replace with your actual plot object
+dev.off()
+
+```

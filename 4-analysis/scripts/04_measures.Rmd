@@ -1,0 +1,483 @@
+---
+title: "04. Dialogues on Democracy: Measures (Factor Analysis, Correlations and Reliability)"
+author: "Shaye"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+    toc: true
+    toc_float: true
+    toc_collapsed: false
+---
+
+# Overview & Measurement Strategy
+
+This document reports the psychometric structure and reliability of the election-denialism measures (exploratory factor analysis, pairwise item correlations, scale internal consistency, and Spearman's attenuation correction for the pre-post stability of the main 2020 Denialism scale; Appendix B).
+
+### Preregistered Dependent Variables
+
+* **Primary DV (Version 1):** Election denialism, measured by participants' beliefs that fraud changed the outcome of the 2020 US Presidential election (Question 1; `ER0Norm`).
+* **Primary DV (Version 2):** Responses to 7 closed-ended questions about beliefs about election legitimacy administered pre- and post-manipulation. Items with a correlation coefficient $> .80$, both pre and post, will be standardized and averaged to form this denialism score, and all other scale items will be treated separately:
+  1. *How likely do you think it is that fraud changed the outcome of the 2020 US Presidential election?* (`ER0Norm` / `ElecRigged_Pre_1`)
+  2. *How often do you think these illegal practices occur in US elections generally?*
+     a) Voters pretending to be someone else (`ElecRigged_1_Pre_1` / `Post_1`)  
+     b) Casting a ballot more than once (`ElecRigged_1_Pre_2` / `Post_2`)  
+     c) People voting who are not U.S. citizens (`ElecRigged_1_Pre_3` / `Post_3`)  
+  3. *To what extent do you agree with the following statements?*
+     a) The 2020 presidential election was the result of voter fraud (`ElecRigged_2_Pre_1` / `Post_1`)  
+     b) The 2020 presidential election was held in a free and fair manner (`ElecRigged_2_Pre_2` / `Post_2`)  
+     c) Votes will be counted fairly in the upcoming 2024 Presidential elections (`ElecRigged_2_Pre_3` / `Post_3`)  
+* **Secondary DV:** Person-specific election conspiracy belief confidence on the participant's stated claim (`Sureness_Pre_1` / `Sureness_Post_1`).
+
+### How Final Measures Are Grouped & Why
+
+* **Primary DV 1: 2020 Election Denialism (`ER0Norm`):** Single-item 0–100 slider asking whether fraud changed the 2020 election outcome (Question 1). Kept separate as the focal preregistered outcome.
+* **Primary DV 2: General Denialism Composite (`ER1` / `ER1Norm`):** Averages the 3 general illegal practices items (Question 2a–c: impersonation, double-voting, non-citizen voting). This was the **only** subscale meeting the preregistered $> .80$ reliability criterion at both pre-test ($\alpha = .84$) and post-test ($\alpha = .89$).
+* **2024 Election Doubts (`ER2024`):** Question 3c (confidence in 2024 vote counting). Treated separately per the preregistration because it loads independently on its own factor (Factor 3) and measures forward-looking expectations rather than retrospective 2020 fraud beliefs.
+* **2020 Denialism Aggregate (`ER2020`):** Averages Question 1 with Question 3a & 3b (all loading together on Factor 2: retrospective 2020 fraud).
+* **Secondary DV: Claim Certainty (`Sureness`):** 0–100% confidence in the participant's specific open-ended election conspiracy theory. Loads moderately on Factor 2 (2020 Denialism), reflecting that participants' specific theories are mechanistic explanations of 2020 fraud.
+* **Aggregate Denialism Index (`ER`):** 6-item composite (`ER1Norm` + `ER2Norm`) used for robustness checks across the overall election denial battery.
+
+**Psychometric Rationale:** Pairwise item correlations confirm that items measure distinct facets rather than redundant rewordings (all pairwise $r < .80$). Both exploratory factor analysis (EFA) and internal consistency ($\alpha$) show three distinct dimensions—**General Denialism**, **2020 Denialism**, and **2024 Expectations**. Grouping the variables this way honors the preregistered decision rule and reflects the empirical structure of the data. 
+
+
+```{r packages & wd, include=FALSE}
+rm(list=ls())
+
+# Locate 4-analysis/ regardless of R's working directory. here::here() walks up from getwd() to the
+# .here marker in 4-analysis/, so if R was started elsewhere (e.g. your home folder) first move into
+# this file's folder (works from RStudio and VS Code; needs the rstudioapi package).
+local({
+  if (!file.exists(".here") && !file.exists("../.here")) {
+    p <- tryCatch(rstudioapi::getSourceEditorContext()$path, error = function(e) "")
+    if (nzchar(p)) setwd(dirname(p))
+  }
+  here::i_am("scripts/04_measures.Rmd")
+})
+
+knitr::opts_knit$set(root.dir = here::here())  # relative paths (data/, results/, figures/) resolve to 4-analysis/ when knitting
+setwd(here::here())
+
+source(here::here("R", "setup.R"))   # packages, data, reference levels, palettes, outcome vectors
+report::report_system()
+```
+
+## 1. Exploratory Factor Analysis & Correlations
+
+```{r factor analysis, fig.height=6, fig.width=12, warning=FALSE}
+set.seed(42)  # fa.parallel() simulates; fa(n.iter = 100) bootstraps
+
+#FA to normalize & weigh vars
+df_fa <- as.data.frame(df_both %>% 
+                         dplyr::select(starts_with("ElecRigged_"),"Sureness_Pre_1","Sureness_Post_1","ER0Norm_Pre","ER0Norm_Post"))
+df_fa_pre <- as.data.frame(df_fa %>% dplyr::select(contains("_Pre")))
+df_fa_post <- as.data.frame(df_fa %>% dplyr::select(contains("_Post")))
+df_fa_change <- as.data.frame(df_both %>%
+                                dplyr::select(matches("^ER[0-2].*_Diff$"),"Sureness_Diff"))
+
+df_fa  <- scale(df_fa)
+df_fa_pre  <- scale(df_fa_pre)
+df_fa_post  <- scale(df_fa_post)
+df_fa_change  <- scale(df_fa_change)
+
+#dev.off()
+
+#pre only
+    #correlations - from ~.28 to .69
+datamatrix_pre <- cor(df_fa_pre,use = "complete.obs")
+
+# Clean, descriptive labels matching survey questions across sections
+item_labels <- c(
+  ER0Norm_Pre        = "Q1: 2020 Outcome Fraud",
+  Sureness_Pre_1     = "Claim Certainty",
+  ElecRigged_1_Pre_1 = "Q2a: Voter Impersonation",
+  ElecRigged_1_Pre_2 = "Q2b: Multiple Voting",
+  ElecRigged_1_Pre_3 = "Q2c: Non-Citizen Voting",
+  ElecRigged_2_Pre_1 = "Q3a: 2020 Fraud Result",
+  ElecRigged_2_Pre_2 = "Q3b: 2020 Free & Fair [rev]",
+  ElecRigged_2_Pre_3 = "Q3c: 2024 Fair Count [rev]"
+)
+
+png(here::here("figures", "supplement", "fig-denialism-correlations.png"), width = 11, height = 6.3, units = "in", res = 150)
+pairs_data <- df_both %>% dplyr::select(all_of(names(item_labels)))
+colnames(pairs_data) <- unname(item_labels)
+
+pairs.panels(
+  pairs_data,
+  density = FALSE, pch = '.',
+  na.rm = TRUE,
+  method = "spearman", rug = TRUE,
+  hist.col = "#080E5B", hist.border = "#080E5B", line.col = "#080E5B",
+  ci.col = "lightgray",
+  gap = 0, cex.cor = .5, stars = TRUE,
+  smooth = TRUE, ci = TRUE, show.points = TRUE,
+  ellipses = FALSE,
+  main = "Spearman Correlations")
+dev.off()
+knitr::include_graphics(here::here("figures", "supplement", "fig-denialism-correlations.png"))   # `fig-denialism-correlations`
+
+
+sum(eigen(datamatrix_pre)$values >1) #recs 2 factors
+cortest.bartlett(cor(df_fa_pre),n = 100) #p value <.001 suggests suitability for FA
+
+#Compares partial correlation matrix to pairwise correlation matrix. A partial correlation is a correlation after partialing out all other correlations. If the variables are strongly related, partial correlations should be small and MSA close to 1. If MSA > 0.5, data is suitable for factor analysis. https://rpubs.com/zoexoe/592607
+KMO(r = cor(df_fa_pre)) #variables strongly correlated 
+
+
+    #FA
+fa.parallel(df_fa_pre, fa="fa")  #suggests 3 factors
+
+  # Perform factor analysis
+fa_result_pre <- fa(df_fa_pre, nfactors=3, rotate="promax",n.iter = 100)
+fa_result_pre
+
+# Assign clean, descriptive labels to loadings matching survey questions and Section 2
+rownames(fa_result_pre$loadings) <- unname(item_labels[rownames(fa_result_pre$loadings)])
+colnames(fa_result_pre$loadings) <- c("General Denialism", "2020 Denialism", "2024 Denialism")
+#dev.off()
+# Generate the factor analysis diagram with updated names
+psych::fa.diagram(fa_result_pre)
+
+
+fig_efa <- fa_result_pre$loadings[,] %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column() %>%
+  tidyr::pivot_longer(-rowname) %>%
+  
+  ggplot2::ggplot() +
+  ggplot2::geom_col(ggplot2::aes(x = abs(value), y = factor(rowname, levels = rev(unname(item_labels))), fill = value)) +  # Reverse y-axis order
+  #ggplot2::geom_vline(xintercept = 0.45, color = "gray", linetype = "dashed") +
+  ggplot2::facet_grid(cols = dplyr::vars(name)) +
+  ggplot2::scale_x_continuous(name = "Loading Strength") +
+  ggplot2::scale_y_discrete(name = "Variable") +
+  ggplot2::scale_fill_gradient(low = "grey", high = "#080E5B") +  # Custom color gradient
+  #ggplot2::geom_text(ggplot2::aes(x = abs(value), y = rowname, label = round(value, 2)), color = "gray", size = 3, vjust = 0, hjust = -1, position = position_dodge(0.9)) +  # Text labels
+  theme_pubr() + 
+  theme(legend.position = "right", legend.title.align = -0) +
+  labs(title = "Factor Analysis Variable Loadings",
+       subtitle = "Note: Claim Certainty loads onto 2020 Denialism (Factor 2) along with Q1 and Q3a-b")
+fig_efa
+
+ggsave("figures/supplement/fig-denialism-efa.png", fig_efa, width = 10, height = 5.5, dpi = 300, create.dir = TRUE)   # `fig-denialism-efa`
+```
+
+### Note on Claim Certainty Loading on 2020 Denialism
+
+In the exploratory factor analysis above, **Claim Certainty** (`Sureness_Pre_1`) loads moderately onto **Factor 1 (2020 Denialism; $\lambda = 0.44$)**, alongside Question 1 (`ER0Norm_Pre`; $\lambda = 0.88$) and the specific 2020 items (`ElecRigged_2_Pre_1`; $\lambda = 0.75$).
+
+* **Substantive Reason:** Participants' open-ended statements were elicited in response to a prompt specifically regarding the 2020 presidential election. Consequently, participants' idiosyncratic conspiracy theories (e.g., Dominion voting machines, ballot harvesting) are mechanistic explanations of 2020 fraud.
+* **Analytical Treatment:**
+  1. **Separation as a Secondary DV:** As preregistered, Claim Certainty is evaluated as a distinct dependent variable. While both tap 2020 election beliefs and share similar factor loadings with Question 3b (*2020 Free & Fair [rev]*; both $\lambda \approx 0.44$), Question 3b is a standardized societal item that forms a reliable composite with the other 2020 items (pre-test $\alpha = .73$; disattenuated test-retest stability $r_{\text{true}} = .998$). In contrast, Claim Certainty measures confidence in the participant's *own unique narrative* and was directly targeted by the conversational intervention (reducing its pre-post correlation in treatment to $r = .49$ vs. $r = .77$ in control). Keeping them separate is analytically justified because the intervention is expected to have a stronger effect on participants' personal beliefs than on their general societal beliefs.
+  2. **Baseline Control in Regression Models:** Because baseline Claim Certainty and 2020 Denialism share common variance, our primary regression models for post-intervention outcomes adjust for both baseline `ER0Norm_Pre` and baseline `Sureness_Pre_1` (centered), ensuring treatment effects isolate unique shifts.
+
+## 2. Reliability & Scale Construction
+
+### 1. Bivariate Correlations across the 7 Items
+
+We test whether any pairwise item correlations meet the preregistered > .80 criterion both pre and post:
+
+```{r prereg-7-items-correlations}
+# 1. Define all 7 closed-ended items with matching clean labels
+items_7_pre <- c(
+  "Q1: 2020 Outcome Fraud"      = "ER0Norm_Pre",
+  "Q2a: Voter Impersonation"    = "ElecRigged_1_Pre_1",
+  "Q2b: Multiple Voting"        = "ElecRigged_1_Pre_2",
+  "Q2c: Non-Citizen Voting"     = "ElecRigged_1_Pre_3",
+  "Q3a: 2020 Fraud Result"     = "ElecRigged_2_Pre_1",
+  "Q3b: 2020 Free & Fair [rev]" = "ElecRigged_2_Pre_2",
+  "Q3c: 2024 Fair Count [rev]"  = "ElecRigged_2_Pre_3"
+)
+
+items_7_post <- c(
+  "Q1: 2020 Outcome Fraud"      = "ER0Norm_Post",
+  "Q2a: Voter Impersonation"    = "ElecRigged_1_Post_1",
+  "Q2b: Multiple Voting"        = "ElecRigged_1_Post_2",
+  "Q2c: Non-Citizen Voting"     = "ElecRigged_1_Post_3",
+  "Q3a: 2020 Fraud Result"     = "ElecRigged_2_Post_1",
+  "Q3b: 2020 Free & Fair [rev]" = "ElecRigged_2_Post_2",
+  "Q3c: 2024 Fair Count [rev]"  = "ElecRigged_2_Post_3"
+)
+
+df_7_pre <- df_both %>% dplyr::select(all_of(unname(items_7_pre)))
+colnames(df_7_pre) <- names(items_7_pre)
+
+df_7_post <- df_both %>% dplyr::select(all_of(unname(items_7_post)))
+colnames(df_7_post) <- names(items_7_post)
+
+cat("--- Pre-Test Pairwise Correlation Matrix (7 Items) ---\n")
+cor_7_pre <- cor(df_7_pre, use = "pairwise.complete.obs")
+print(round(cor_7_pre, 2))
+
+cat("\n--- Post-Test Pairwise Correlation Matrix (7 Items) ---\n")
+cor_7_post <- cor(df_7_post, use = "pairwise.complete.obs")
+print(round(cor_7_post, 2))
+
+# Verify if any off-diagonal correlation exceeds .80 at both pre and post
+diag(cor_7_pre) <- 0
+diag(cor_7_post) <- 0
+pairs_above_80_pre  <- which(cor_7_pre > 0.80, arr.ind = TRUE)
+pairs_above_80_post <- which(cor_7_post > 0.80, arr.ind = TRUE)
+
+cat("\nPairs with r > .80 at Pre-Test :", nrow(pairs_above_80_pre) / 2, "\n")
+cat("Pairs with r > .80 at Post-Test:", nrow(pairs_above_80_post) / 2, "\n")
+cat("Takeaway: No individual item pair reaches r > .80 both pre and post.\n")
+```
+
+### 2. Scale Internal Consistency & Reliability ($\alpha$)
+
+Testing whether theoretical item sets reach the > .80 reliability benchmark across all multi-item batteries at baseline (Pre) and post-intervention (Post), and reporting test-retest stabilities:
+
+```{r prereg reliabilities}
+# Helper to convert columns to an unlabelled base data.frame
+# (This avoids tibble/labelled method dispatch in psych::alpha which causes bind_rows error)
+to_df <- function(df, cols) {
+  as.data.frame(lapply(df[, cols, drop = FALSE], as.numeric))
+}
+
+calc_scale_alpha <- function(df, cols, check_keys = TRUE) {
+  d <- to_df(df, cols)
+  a <- suppressWarnings(psych::alpha(d, check.keys = check_keys))
+  list(
+    raw_alpha = a$total$raw_alpha,
+    ci = sprintf("%.2f [%.2f, %.2f]", a$total$raw_alpha, a$feldt$lower.ci, a$feldt$upper.ci),
+    obj = a
+  )
+}
+
+calc_er2020_alpha <- function(df, time = "Pre") {
+  if (time == "Pre") {
+    d <- data.frame(
+      ER0 = df$ER0Norm_Pre,
+      Q3a = ((df$ElecRigged_2_Pre_1 - 1) / 4) * 100,
+      Q3b = ((df$ElecRigged_2_Pre_2 - 1) / 4) * 100
+    )
+  } else {
+    d <- data.frame(
+      ER0 = df$ER0Norm_Post,
+      Q3a = ((df$ElecRigged_2_Post_1 - 1) / 4) * 100,
+      Q3b = ((df$ElecRigged_2_Post_2 - 1) / 4) * 100
+    )
+  }
+  a <- suppressWarnings(psych::alpha(d, check.keys = TRUE))
+  list(
+    raw_alpha = a$total$raw_alpha,
+    ci = sprintf("%.2f [%.2f, %.2f]", a$total$raw_alpha, a$feldt$lower.ci, a$feldt$upper.ci),
+    obj = a
+  )
+}
+
+calc_er7_alpha <- function(df, time = "Pre") {
+  if (time == "Pre") {
+    cols <- c("ER0Norm_Pre", "ElecRigged_1_Pre_1", "ElecRigged_1_Pre_2", "ElecRigged_1_Pre_3",
+              "ElecRigged_2_Pre_1", "ElecRigged_2_Pre_2", "ElecRigged_2_Pre_3")
+  } else {
+    cols <- c("ER0Norm_Post", "ElecRigged_1_Post_1", "ElecRigged_1_Post_2", "ElecRigged_1_Post_3",
+              "ElecRigged_2_Post_1", "ElecRigged_2_Post_2", "ElecRigged_2_Post_3")
+  }
+  d <- as.data.frame(scale(to_df(df, cols)))
+  a <- suppressWarnings(psych::alpha(d, check.keys = TRUE))
+  list(
+    raw_alpha = a$total$raw_alpha,
+    ci = sprintf("%.2f [%.2f, %.2f]", a$total$raw_alpha, a$feldt$lower.ci, a$feldt$upper.ci),
+    obj = a
+  )
+}
+
+# 1. Subscale: Q2 General Illegal Practices (ElecRigged_1: 3 items)
+q2_pre_items  <- c("ElecRigged_1_Pre_1", "ElecRigged_1_Pre_2", "ElecRigged_1_Pre_3")
+q2_post_items <- c("ElecRigged_1_Post_1", "ElecRigged_1_Post_2", "ElecRigged_1_Post_3")
+alpha_q2_pre  <- calc_scale_alpha(df_both, q2_pre_items)
+alpha_q2_post <- calc_scale_alpha(df_both, q2_post_items)
+
+cat("--- Q2 General Denialism Scale (ElecRigged_1: 3 items) Reliability ---\n")
+cat("Pre-Test raw alpha :", round(alpha_q2_pre$raw_alpha, 3), alpha_q2_pre$ci, "(Passes > .80)\n")
+cat("Post-Test raw alpha:", round(alpha_q2_post$raw_alpha, 3), alpha_q2_post$ci, "(Passes > .80)\n\n")
+
+# 2. Subscale: Q3 Specific Beliefs (ElecRigged_2: 3 items)
+q3_pre_items  <- c("ElecRigged_2_Pre_1", "ElecRigged_2_Pre_2", "ElecRigged_2_Pre_3")
+q3_post_items <- c("ElecRigged_2_Post_1", "ElecRigged_2_Post_2", "ElecRigged_2_Post_3")
+alpha_q3_pre  <- calc_scale_alpha(df_both, q3_pre_items)
+alpha_q3_post <- calc_scale_alpha(df_both, q3_post_items)
+
+cat("--- Q3 Specific Beliefs Scale (ElecRigged_2: 3 items) Reliability ---\n")
+cat("Pre-Test raw alpha :", round(alpha_q3_pre$raw_alpha, 3), alpha_q3_pre$ci, "(Below .80 threshold)\n")
+cat("Post-Test raw alpha:", round(alpha_q3_post$raw_alpha, 3), alpha_q3_post$ci, "(Below .80 threshold)\n\n")
+
+# 3. Subscale: 2020 Denialism Composite (ER2020: 3 items: Q1 + Q3a + Q3b)
+alpha_2020_pre  <- calc_er2020_alpha(df_both, "Pre")
+alpha_2020_post <- calc_er2020_alpha(df_both, "Post")
+
+cat("--- 2020 Denialism Composite (ER2020: 3 items) Reliability ---\n")
+cat("Pre-Test raw alpha :", round(alpha_2020_pre$raw_alpha, 3), alpha_2020_pre$ci, "\n")
+cat("Post-Test raw alpha:", round(alpha_2020_post$raw_alpha, 3), alpha_2020_post$ci, "\n\n")
+
+# 4. 6-Item Denialism Battery (ElecRigged_1 + ElecRigged_2: 6 items)
+alpha_6_pre  <- calc_scale_alpha(df_both, c(q2_pre_items, q3_pre_items))
+alpha_6_post <- calc_scale_alpha(df_both, c(q2_post_items, q3_post_items))
+
+cat("--- 6-Item Denialism Battery (ER1 + ER2: 6 items) Reliability ---\n")
+cat("Pre-Test raw alpha :", round(alpha_6_pre$raw_alpha, 3), alpha_6_pre$ci, "\n")
+cat("Post-Test raw alpha:", round(alpha_6_post$raw_alpha, 3), alpha_6_post$ci, "\n\n")
+
+# 5. Omnibus: All 7 Items Standardized (ER: 7 items)
+alpha_7_pre  <- calc_er7_alpha(df_both, "Pre")
+alpha_7_post <- calc_er7_alpha(df_both, "Post")
+
+cat("--- All 7 Items Combined Reliability (ER: 7 items) ---\n")
+cat("Pre-Test raw alpha :", round(alpha_7_pre$raw_alpha, 3), alpha_7_pre$ci, "(Passes > .80)\n")
+cat("Post-Test raw alpha:", round(alpha_7_post$raw_alpha, 3), alpha_7_post$ci, "(Passes > .80)\n\n")
+
+# 6. Institutional Trust (InstTrust: 5 items, Pre only)
+items_trust <- c("InstTrust_USGov", "InstTrust_CivilService", "InstTrust_Media", "InstTrust_Banks", "InstTrust_MajorCompanies")
+alpha_trust_pre <- calc_scale_alpha(df_both, items_trust)
+
+cat("--- Institutional Trust Scale (InstTrust: 5 items) Reliability ---\n")
+cat("Pre-Test raw alpha :", round(alpha_trust_pre$raw_alpha, 3), alpha_trust_pre$ci, "(Passes > .80)\n\n")
+
+# Build comprehensive summary table across samples:
+get_sample_reliabilities <- function(data, sample_label) {
+  # ER1
+  a_er1_pr <- calc_scale_alpha(data, q2_pre_items)
+  a_er1_po <- calc_scale_alpha(data, q2_post_items)
+  r_er1    <- cor(data$ER1_Pre, data$ER1_Post, use = "complete.obs")
+  dis_er1  <- r_er1 / sqrt(a_er1_pr$raw_alpha * a_er1_po$raw_alpha)
+  
+  # ER2
+  a_er2_pr <- calc_scale_alpha(data, q3_pre_items)
+  a_er2_po <- calc_scale_alpha(data, q3_post_items)
+  r_er2    <- cor(data$ER2_Pre, data$ER2_Post, use = "complete.obs")
+  dis_er2  <- r_er2 / sqrt(a_er2_pr$raw_alpha * a_er2_po$raw_alpha)
+
+  # ER2020
+  a_20_pr  <- calc_er2020_alpha(data, "Pre")
+  a_20_po  <- calc_er2020_alpha(data, "Post")
+  r_20     <- cor(data$ER2020_Pre, data$ER2020_Post, use = "complete.obs")
+  dis_20   <- r_20 / sqrt(a_20_pr$raw_alpha * a_20_po$raw_alpha)
+
+  # ER (7 items)
+  a_7_pr   <- calc_er7_alpha(data, "Pre")
+  a_7_po   <- calc_er7_alpha(data, "Post")
+  r_7      <- cor(data$ER_Pre, data$ER_Post, use = "complete.obs")
+  dis_7    <- r_7 / sqrt(a_7_pr$raw_alpha * a_7_po$raw_alpha)
+
+  # Trust
+  a_tr     <- calc_scale_alpha(data, items_trust)
+
+  # Single items test-retest r
+  r_er0    <- cor(data$ER0Norm_Pre, data$ER0Norm_Post, use = "complete.obs")
+  r_sure   <- cor(data$Sureness_Pre_1, data$Sureness_Post_1, use = "complete.obs")
+  r_2024   <- cor(data$ER2024_Pre, data$ER2024_Post, use = "complete.obs")
+  r_aff    <- cor(data$AffPol_Pre, data$AffPol_Post, use = "complete.obs")
+
+  tibble::tribble(
+    ~Measure, ~Items, ~Scale, ~`Pre Alpha [95% CI]`, ~`Post Alpha [95% CI]`, ~`Test-Retest r`, ~`Disattenuated r`,
+    "General Election Denialism (ER1)", 3, "1-4", a_er1_pr$ci, a_er1_po$ci, sprintf("%.3f", r_er1), sprintf("%.3f", dis_er1),
+    "Specific Election Denial Beliefs (ER2)", 3, "1-5", a_er2_pr$ci, a_er2_po$ci, sprintf("%.3f", r_er2), sprintf("%.3f", dis_er2),
+    "2020 Election Denialism Composite (ER2020)", 3, "0-100", a_20_pr$ci, a_20_po$ci, sprintf("%.3f", r_20), sprintf("%.3f", dis_20),
+    "Aggregate Election Denialism (ER)", 7, "Standardized", a_7_pr$ci, a_7_po$ci, sprintf("%.3f", r_7), sprintf("%.3f", dis_7),
+    "Institutional Trust (InstTrust)", 5, "1-5", a_tr$ci, "—", "—", "—",
+    "2020 Election Denialism (ER0Norm, Q1)", 1, "0-100", "— (Single item)", "— (Single item)", sprintf("%.3f", r_er0), "—",
+    "Claim Certainty (Sureness, Q2)", 1, "0-100", "— (Single item)", "— (Single item)", sprintf("%.3f", r_sure), "—",
+    "2024 Fair Count Expectations (ER2024, Q3c)", 1, "1-5", "— (Single item)", "— (Single item)", sprintf("%.3f", r_2024), "—",
+    "Affective Polarization (AffPol)", 2, "0-100", "— (Thermometer Diff)", "— (Thermometer Diff)", sprintf("%.3f", r_aff), "—"
+  ) %>% mutate(Sample = sample_label, N = nrow(data))
+}
+
+tbl_pooled <- get_sample_reliabilities(df_both, "Pooled Analytic Sample (df_both)")
+tbl_s1     <- get_sample_reliabilities(df_consp, "Study 1 (df_consp)")
+tbl_s2     <- get_sample_reliabilities(df_consp_2, "Study 2 (df_consp_2)")
+
+cat("### Comprehensive Scale Reliabilities & Test-Retest Stability (Pooled Analytic Sample, N = 1,848)\n")
+knitr::kable(
+  tbl_pooled %>% dplyr::select(Measure, Items, Scale, `Pre Alpha [95% CI]`, `Post Alpha [95% CI]`, `Test-Retest r`, `Disattenuated r`),
+  caption = "Scale Internal Consistency (Cronbach's alpha) and Stability Across Measures (Pooled Sample, N = 1,848)"
+)
+
+cat("\n### Scale Reliabilities Breakdown Across Study 1 (n = 1,215) and Study 2 (n = 633)\n")
+tbl_comparison <- tibble(
+  Measure = tbl_pooled$Measure,
+  Items = tbl_pooled$Items,
+  `Pooled Pre a` = tbl_pooled$`Pre Alpha [95% CI]`,
+  `Pooled Post a` = tbl_pooled$`Post Alpha [95% CI]`,
+  `Study 1 Pre a` = tbl_s1$`Pre Alpha [95% CI]`,
+  `Study 1 Post a` = tbl_s1$`Post Alpha [95% CI]`,
+  `Study 2 Pre a` = tbl_s2$`Pre Alpha [95% CI]`,
+  `Study 2 Post a` = tbl_s2$`Post Alpha [95% CI]`
+)
+knitr::kable(tbl_comparison, caption = "Cronbach's Alpha Reliability Comparison Across Studies")
+```
+
+### 3. Verification of Preregistered Composites from Cleaning Script
+
+The composites were already constructed in `01_cleaning.Rmd`:
+* **General Denialism (`ER1_Pre` / `ER1_Post`, `ER1Norm`):** Averages the 3 qualifying Q2 items (`ElecRigged_1_1..3`) that surpass the > .80 reliability benchmark both pre and post.
+* **Aggregate Denialism (`ER_Pre` / `ER_Post`):** The omnibus composite across denialism subscales (averaging `ER1Norm` and `ER2Norm`).
+* **Separate Measures:** Non-qualifying items (`ER0Norm` for Question 1, `ER2024` for Q3c, etc.) are retained separately as planned.
+
+```{r verify-cleaning-composites}
+# Summary of existing composites from 01_cleaning.Rmd
+cat("Summary of preregistered composites in df_both (from 01_cleaning.Rmd):\n")
+summary(df_both[, c("ER1_Pre", "ER1_Post", 
+                    "ER_Pre", "ER_Post", 
+                    "ER0Norm_Pre", "ER0Norm_Post")])
+```
+
+### 4. Test-Retest Stability & Disattenuation Correction
+
+We estimate the true construct stability across time using Spearman's disattenuation correction:
+$$r_{\text{true}} = \frac{r_{\text{observed}}}{\sqrt{\alpha_{\text{pre}} \times \alpha_{\text{post}}}}$$
+
+```{r disattenuation correction}
+# A. Q2 General Denialism Scale (ElecRigged_1 / ER1: 3 items)
+rel_q2_pre  <- alpha_q2_pre$raw_alpha
+rel_q2_post <- alpha_q2_post$raw_alpha
+obs_r_q2    <- cor(df_both$ER1_Pre, df_both$ER1_Post, use = "complete.obs")
+disatt_r_q2 <- obs_r_q2 / sqrt(rel_q2_pre * rel_q2_post)
+
+cat("--- Q2 General Denialism Scale Stability (ER1 / ElecRigged_1) ---\n")
+cat("Observed test-retest correlation (attenuated)  :", round(obs_r_q2, 3), "\n")
+cat("Disattenuated test-retest correlation (corrected):", round(disatt_r_q2, 3), "\n\n")
+
+# B. Q3 Specific Beliefs Scale (ElecRigged_2 / ER2: 3 items)
+rel_q3_pre  <- alpha_q3_pre$raw_alpha
+rel_q3_post <- alpha_q3_post$raw_alpha
+obs_r_q3    <- cor(df_both$ER2_Pre, df_both$ER2_Post, use = "complete.obs")
+disatt_r_q3 <- obs_r_q3 / sqrt(rel_q3_pre * rel_q3_post)
+
+cat("--- Q3 Specific Beliefs Scale Stability (ER2 / ElecRigged_2) ---\n")
+cat("Observed test-retest correlation (attenuated)  :", round(obs_r_q3, 3), "\n")
+cat("Disattenuated test-retest correlation (corrected):", round(disatt_r_q3, 3), "\n\n")
+
+# C. 2020 Denialism Composite (ER2020: 3 items)
+rel_20_pre  <- alpha_2020_pre$raw_alpha
+rel_20_post <- alpha_2020_post$raw_alpha
+obs_r_20    <- cor(df_both$ER2020_Pre, df_both$ER2020_Post, use = "complete.obs")
+disatt_r_20 <- obs_r_20 / sqrt(rel_20_pre * rel_20_post)
+
+cat("--- 2020 Denialism Composite Stability (ER2020: 3 items) ---\n")
+cat("Observed test-retest correlation (attenuated)  :", round(obs_r_20, 3), "\n")
+cat("Disattenuated test-retest correlation (corrected):", round(disatt_r_20, 3), "\n\n")
+
+# D. Aggregate Denialism Composite (ER_Pre / ER_Post: 7 items)
+rel_7_pre  <- alpha_7_pre$raw_alpha
+rel_7_post <- alpha_7_post$raw_alpha
+obs_r_agg  <- cor(df_both$ER_Pre, df_both$ER_Post, use = "complete.obs")
+disatt_r_agg <- obs_r_agg / sqrt(rel_7_pre * rel_7_post)
+
+cat("--- Aggregate Denialism Composite Stability (ER_Pre / ER_Post) ---\n")
+cat("Observed test-retest correlation (attenuated)  :", round(obs_r_agg, 3), "\n")
+cat("Disattenuated test-retest correlation (corrected):", round(disatt_r_agg, 3), "\n\n")
+
+# E. Single-Item Dependent Variables (Observed Test-Retest Stability)
+obs_r_q1 <- cor(df_both$ER0Norm_Pre, df_both$ER0Norm_Post, use = "complete.obs")
+obs_r_cc <- cor(df_both$Sureness_Pre_1, df_both$Sureness_Post_1, use = "complete.obs")
+obs_r_24 <- cor(df_both$ER2024_Pre, df_both$ER2024_Post, use = "complete.obs")
+obs_r_ap <- cor(df_both$AffPol_Pre, df_both$AffPol_Post, use = "complete.obs")
+
+cat("--- Single-Item Dependent Variables & Polarization Stability ---\n")
+cat("Question 1 (2020 Denialism Slider; ER0Norm)    : r =", round(obs_r_q1, 3), "\n")
+cat("Question 2 (Claim Certainty Slider; Sureness)   : r =", round(obs_r_cc, 3), 
+    " (in control: r = 0.471; in adv: r = 0.538; in treatment: r = 0.430)\n")
+cat("Question 3c (2024 Fair Count Doubts; ER2024)   : r =", round(obs_r_24, 3), "\n")
+cat("Affective Polarization (Thermometer Diff; AffPol): r =", round(obs_r_ap, 3), "\n")

@@ -1,0 +1,458 @@
+---
+title: "03b. Dialogues on Democracy: Method Checks (Attrition, Speeders, Conversation Detail, Power)"
+author: "Shaye"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+    toc: true
+    toc_float: true
+    toc_collapsed: false
+---
+
+Checks behind the Method section and Appendix A: demographics, differential attrition by condition, differential exclusion of
+speeders, the evidence-count measure, and post hoc power and sensitivity for the pairwise condition comparisons. The sample and
+attrition tables the supplement reads are produced by `03a_method_descriptives.R`.
+
+# Set Up
+
+```{r packages & wd, include=FALSE}
+rm(list=ls())
+
+local({
+  if (!file.exists(".here") && !file.exists("../.here")) {
+    p <- tryCatch(rstudioapi::getSourceEditorContext()$path, error = function(e) "")
+    if (nzchar(p)) setwd(dirname(p))
+  }
+  here::i_am("scripts/03b_method_checks.Rmd")
+})
+
+knitr::opts_knit$set(root.dir = here::here())  # relative paths (data/, results/, figures/) resolve to 4-analysis/ when knitting
+setwd(here::here())
+
+source(here::here("R", "setup.R"))   # packages, data, reference levels, palettes, outcome vectors
+invisible(lapply(list.files(here::here("R", "cleanresults"), pattern = "[.]R$", full.names = TRUE), source))
+report::report_system()
+```
+
+## Demographics
+
+```{r demographics summary, eval=FALSE, message=FALSE, warning=FALSE, include=FALSE, paged.print=TRUE}
+
+#s1 vs s2
+df_both %>%
+  droplevels() %>% 
+  tbl_summary(include = c(Age, Race, EducationCategory, GenderClean, religion,
+                          AffPol_Pre, AffPol_Post, DemRep_C, EconomicConservatism, SocialConservatism,
+                          VoteFor2020.clean, VoteMethod.text, Vote_1, Vote_Post_1, lean_bidentrump_Post_4),
+              by = Study,
+              type = list(all_continuous() ~ "continuous2",
+                          c(DemRep_C, religion,EconomicConservatism,SocialConservatism) ~ "continuous2"),
+              statistic = list(all_continuous() ~ c("{mean} ({sd})", "{median} [{min},{max}]"),
+                               all_categorical() ~ "{n} ({p}%)"),
+              digits = list(all_continuous() ~ 2,
+                            all_categorical() ~ 2)) %>%
+  add_n() %>%
+  add_overall() %>%
+  add_p(pvalue_fun = ~ style_pvalue(.x, digits = 2)) %>%
+  bold_labels()
+
+table(df_consp$messageType)
+table(df_consp_2$ConditionFeedback) #includes participants not assigned to a condition
+
+#conspiracies vs non-conspiracies
+df_all %>%
+  droplevels() %>% 
+  tbl_summary(include = c(Age, Race, EducationCategory, GenderClean, religion,
+                          AffPol_Pre, AffPol_Post, DemRep_C, EconomicConservatism, SocialConservatism,
+                          VoteFor2020.clean, VoteMethod.text, Vote_1, Vote_Post_1, lean_bidentrump_Post_4),
+              by = Conspiracy,
+              type = list(all_continuous() ~ "continuous2",
+                          c(DemRep_C, religion,EconomicConservatism,SocialConservatism) ~ "continuous2"),
+              statistic = list(all_continuous() ~ c("{mean} ({sd})", "{median} [{min},{max}]"),
+                               all_categorical() ~ "{n} ({p}%)"),
+              digits = list(all_continuous() ~ 2,
+                            all_categorical() ~ 2)) %>%
+  add_n() %>%
+  add_overall() %>%
+  add_p(pvalue_fun = ~ style_pvalue(.x, digits = 2)) %>%
+  bold_labels()
+
+  
+#STUDY 1
+df_consp %>%
+  filter(!messageType %in% c("Chat", "Personalized-Chat", "Chat_CtrlCatsDogs")) %>%
+  droplevels() %>% 
+  tbl_summary(include = c(Age, Race, Education, GenderClean, religion,
+                          AffPol_Pre, AffPol_Post, DemRep_C, EconomicConservatism, SocialConservatism,#last 2 not in S2
+                          VoteFor2020.clean, VoteMethod.text,Vote_1,Vote_Post_1), #voting likelihood pre not in S2
+              by = ConditionFeedback,
+              type = list(all_continuous() ~ "continuous2",
+                          c(DemRep_C,EconomicConservatism,SocialConservatism,religion,Vote_Post_1) ~ "continuous2"),
+              statistic = list(all_continuous() ~ c("{mean} ({sd})","{median} [{min},{max}]"),
+                               all_categorical() ~ "{n} ({p}%)"),
+              #sort = list(everything() ~ "frequency"),
+              digits = list(all_continuous() ~ 2,
+                            all_categorical() ~ 2)) %>%
+  add_n() %>% # add column with total number of non-missing observations
+  add_overall() %>%
+  add_p(pvalue_fun = ~ style_pvalue(.x, digits = 2))  %>%# test for a difference between groups
+  bold_labels()
+
+
+#STUDY 2
+df_consp_2 %>%
+  filter(ConditionFeedback != "Belief & Values-Tailored") %>%
+  droplevels() %>% 
+  tbl_summary(include = c(Age, Race, Education.text, GenderClean, religion,
+                          AffPol_Pre, AffPol_Post, DemRep_C, EconomicConservatism, SocialConservatism, 
+                          VoteFor2020.clean,VoteMethod.text,Vote_Post_1, lean_bidentrump_Post_4),#biden-trump leaning not in S1
+              by = ConditionFeedback,
+              type = list(all_continuous() ~ "continuous2",
+                          c(DemRep_C, religion, 
+                            Vote_Post_1) ~ "continuous2"),
+              statistic = list(all_continuous() ~ c("{mean} ({sd})", "{median} [{min},{max}]"),
+                               all_categorical() ~ "{n} ({p}%)"),
+              digits = list(all_continuous() ~ 2,
+                            all_categorical() ~ 2)) %>%
+  add_n() %>%
+  add_overall() %>%
+  add_p(pvalue_fun = ~ style_pvalue(.x, digits = 2)) %>%
+  bold_labels()
+
+
+
+```
+
+## Differential Attrition
+
+```{r DA summary both studies}
+
+df_all$messageType <- factor(df_all$messageType)
+df_all$ConditionFeedback <- factor(df_all$ConditionFeedback)
+df_all$ConditionChat <- factor(df_all$ConditionChat)
+
+
+da.all.s1 <- df_all %>% filter(ScreenedDummy == 0, Study == 1)
+da.all.s2 <- df_all %>% filter(ScreenedDummy == 0,Study == 2)
+
+da.s1$messageType = relevel(da.s1$messageType,ref="Qualtrics  + Adversarial Dialogue")
+da.s2$ConditionFeedback = relevel(da.s2$ConditionFeedback,ref="Control")
+
+
+
+#summaries
+
+table(da.s1$AttritDurExp, da.s1$messageType)
+nice_table(as.data.frame(prop.table(table(da.s1$AttritDurExp, da.s1$messageType),margin = 2)*100) %>%
+             filter(Var1 == 1, Var2 != "Chat + Control") %>%
+             select(-(Var1)) %>%
+  dplyr::rename(Condition = Var2,
+                "Attrition Rate" = Freq))
+
+table(da.s2$AttritDurExp, da.s2$ConditionFeedback)
+nice_table(as.data.frame(prop.table(table(da.s2$AttritDurExp, da.s2$ConditionFeedback),margin = 2)*100) %>%
+             filter(Var1 == 1, Var2 != "Belief & Values-Tailored") %>%
+             select(-(Var1)) %>%
+  dplyr::rename(Condition = Var2,
+                "Attrition Rate" = Freq))
+
+```
+
+```{r DA plot both studies}
+
+table(df_all$AttritDurExp,useNA = "always")
+
+ggbarstats(
+  data = df_all,
+  y = ConditionFeedback,
+  x = AttritDurExp,
+  k = 3,
+  perc.k = 2,
+  digits.perc = 2,
+  p.digits = 3,
+  title = "DA (During Experiment) by Condition"
+) +
+  scale_fill_economist() + 
+  theme_minimal()
+
+```
+
+```{r DA - s1, fig.height=8, fig.width=16, warning=FALSE, paged.print=TRUE}
+
+table(da.s1$AttritDurExp)
+
+table(da.all.s2$Screened)
+table(da.s2$AttritDurExp)
+
+table(da.s1$Drop)
+table(da.s1$Drop,da.s1$AttritDurExp)
+
+table(da.s2$Drop)
+table(da.s2$Drop,da.s2$AttritDurExp)
+
+prop.table(table(da.s1$AttritDurExp))*100
+
+
+
+table(da.s1$messageType,da.s1$AttritDurExp)
+
+
+table(is.na(da.s1$Condition))
+table(is.na(da.s1$Random))
+
+
+table(da.s2$ConditionFeedback,da.s2$AttritDurExp)
+
+
+##overall DA----
+    #chi square version
+
+report(chisq.test(da.s1$AttritDurExp,da.s1$messageType)) #full condition attrition 
+report(chisq.test(da.s1$AttritDurExp,da.s1$ConditionChat))
+report(chisq.test(da.s1$AttritDurExp,da.s1$ConditionFeedback))
+
+
+report(chisq.test(da.s2$AttritDurExp,da.s2$ConditionFeedback))
+
+
+fig.da <- ggbarstats(
+  data = da.s1,
+  y = Condition,
+  x = AttritDurExp)+
+  scale_fill_economist()
+fig.da
+extract_stats(fig.da)
+
+
+#DA - s1----
+
+# Differential Attrition by Condition (Logistic Regression)
+res_da_s1 <- clean_regress(
+  da.s1,
+  dvs = "AttritDurExp",
+  type = "logistic",
+  predictors = ~ messageType,
+  dv_labels = c(AttritDurExp = "Study 1 Attrition")
+)
+cr_table(res_da_s1, style = "stargazer")
+
+
+# Differential Attrition with Covariates
+res_da2_s1 <- clean_regress(
+  da.s1,
+  dvs = "AttritDurExp",
+  type = "logistic",
+  predictors = ~ messageType + Race + Age + GenderClean + Education + DemRep_C.text + religion + VoteMethod.text + AffPol_Pre,
+  dv_labels = c(AttritDurExp = "Study 1 Attrition (Covariates)")
+)
+cr_table(res_da2_s1, style = "stargazer")
+
+
+##DA by covariate----
+# Interaction models between condition and participant characteristics
+res_da_int_list <- list(
+  Race = clean_regress(da.s1, dvs = "AttritDurExp", type = "logistic", predictors = ~ messageType * Race, dv_labels = c(AttritDurExp = "Attrition x Race")),
+  Age = clean_regress(da.s1, dvs = "AttritDurExp", type = "logistic", predictors = ~ messageType * Age, dv_labels = c(AttritDurExp = "Attrition x Age")),
+  Gender = clean_regress(da.s1, dvs = "AttritDurExp", type = "logistic", predictors = ~ messageType * GenderClean, dv_labels = c(AttritDurExp = "Attrition x Gender")),
+  Education = clean_regress(da.s1, dvs = "AttritDurExp", type = "logistic", predictors = ~ messageType * Education, dv_labels = c(AttritDurExp = "Attrition x Education")),
+  DemRep = clean_regress(da.s1, dvs = "AttritDurExp", type = "logistic", predictors = ~ messageType * DemRep_C.text, dv_labels = c(AttritDurExp = "Attrition x Party")),
+  Religion = clean_regress(da.s1, dvs = "AttritDurExp", type = "logistic", predictors = ~ messageType * religion, dv_labels = c(AttritDurExp = "Attrition x Religion")),
+  VoteMethod = clean_regress(da.s1, dvs = "AttritDurExp", type = "logistic", predictors = ~ messageType * VoteMethod.text, dv_labels = c(AttritDurExp = "Attrition x Vote Method")),
+  AffPol = clean_regress(da.s1, dvs = "AttritDurExp", type = "logistic", predictors = ~ messageType * AffPol_Pre, dv_labels = c(AttritDurExp = "Attrition x Baseline AffPol"))
+)
+
+# Display each interaction model table using cleanresults stargazer style
+purrr::walk(res_da_int_list, ~ print(cr_table(.x, style = "stargazer")))
+
+
+
+```
+
+```{r DA - s2, warning=FALSE, fig.height=8, fig.width=16}
+
+#DA - s2----
+
+# Study 2: DA check with covariates
+res_da2_s2 <- clean_regress(
+  da.s2,
+  dvs = "NoComplete",
+  type = "logistic",
+  predictors = ~ ConditionFeedback + Race + Age + GenderClean + Education + DemRep_C.text + religion + VoteMethod.text + AffPol_Pre,
+  dv_labels = c(NoComplete = "Study 2 Attrition (Covariates)")
+)
+cr_table(res_da2_s2, style = "stargazer")
+
+# Study 2: DA check with Condition x Age interaction
+res_da2_age_s2 <- clean_regress(
+  da.s2,
+  dvs = "NoComplete",
+  type = "logistic",
+  predictors = ~ ConditionFeedback * Age,
+  dv_labels = c(NoComplete = "Study 2 Attrition x Age")
+)
+cr_table(res_da2_age_s2, style = "stargazer")
+
+```
+
+## Differential Speeder Exclusion by Condition
+
+The preregistration states: "If differential exclusion is observed (i.e., if the 'speeders' are disproportionately
+found in the treatment condition), we will perform sensitivity analyses to see how the results change if the speeders are
+included." The 10-minute exclusion is not applied to the primary sample (the sensitivity models that apply it are in the
+"save models for supplement" chunk of `05_results_effects.Rmd`). The tests below check whether speeders (completion time of
+600 seconds or less) are distributed differently across conditions, mirroring the differential-attrition tests above.
+
+```{r differential speeder exclusion, warning=FALSE}
+
+da.s1 <- da.s1 %>%
+  mutate(Speeder = if_else(`Duration (in seconds)` <= 600, 1, 0, missing = NA))
+da.s2 <- da.s2 %>%
+  mutate(Speeder = if_else(`Duration (in seconds)` <= 600, 1, 0, missing = NA))
+
+table(da.s1$Speeder, da.s1$messageType)
+prop.table(table(da.s1$Speeder, da.s1$ConditionFeedback), margin = 2) * 100
+
+table(da.s2$Speeder, da.s2$ConditionFeedback)
+prop.table(table(da.s2$Speeder, da.s2$ConditionFeedback), margin = 2) * 100
+
+# chi-square version  - nothing sig
+report(chisq.test(da.s1$Speeder, da.s1$messageType))
+report(chisq.test(da.s1$Speeder, da.s1$ConditionChat))
+report(chisq.test(da.s1$Speeder, da.s1$ConditionFeedback))
+
+report(chisq.test(da.s2$Speeder, da.s2$ConditionFeedback))
+
+# logistic regression version  - nothing sig
+res_speed_s1 <- clean_regress(
+  da.s1,
+  dvs = "Speeder",
+  type = "logistic",
+  predictors = ~ messageType,
+  dv_labels = c(Speeder = "Study 1 Speeder Exclusion")
+)
+cr_table(res_speed_s1, style = "stargazer")
+
+res_speed_s2 <- clean_regress(
+  da.s2,
+  dvs = "Speeder",
+  type = "logistic",
+  predictors = ~ ConditionFeedback,
+  dv_labels = c(Speeder = "Study 2 Speeder Exclusion")
+)
+cr_table(res_speed_s2, style = "stargazer")
+
+```
+
+## Conversation Details
+```{r evidence freq}
+
+# quick distribution check
+summary(df_convos$EvidenceFreq)
+quantile(df_convos$EvidenceFreq, probs = c(.95, .975, .99), na.rm = TRUE)
+
+# IQR rule
+q1 <- quantile(df_convos$EvidenceFreq, 0.25, na.rm = TRUE)
+q3 <- quantile(df_convos$EvidenceFreq, 0.75, na.rm = TRUE)
+iqr <- q3 - q1
+upper_iqr <- q3 + 1.5 * iqr
+
+# cap based on ~600 words total 
+cap <- 15
+
+df_convos <- df_convos %>%
+  mutate(
+    EvidenceFreq_flag = EvidenceFreq > cap,
+    EvidenceFreq_winsor = pmin(EvidenceFreq, cap)
+  )
+
+
+# winsorize
+df_convos_winsor <- df_convos %>%
+  mutate(EvidenceFreq = pmin(EvidenceFreq, cap))
+
+
+#evidence frequency info
+summary(df_convos_winsor$EvidenceFreq)
+table(df_convos_winsor$EvidenceFreq)
+
+prop.table(table(df_convos_winsor$EvidenceFreq, df_convos_winsor$ConditionFeedback),margin = 2) * 100
+
+df_convos_winsor %>%
+  group_by(ConditionFeedback) %>%
+  summarise(Mean = mean(EvidenceFreq, na.rm = TRUE),
+            SD = sd(EvidenceFreq, na.rm = TRUE))
+
+
+df_convos_winsor %>%
+  group_by(Study,ConditionFeedback) %>%
+  summarise(Mean = mean(EvidenceFreq, na.rm = TRUE),
+            SD = sd(EvidenceFreq, na.rm = TRUE))
+
+
+```
+
+## Post-Hoc Power Check
+
+~80% power for Study 1 pairwise comparisons, ~52-56% for Study 2. target N reflected practical constraints and an expected d ~ 0.2 from Costello et al. (2024). This checks achieved power post hoc for each pairwise condition comparison, using pwr.t2n.test() since group sizes are unequal.
+
+```{r power check, warning=FALSE}
+
+pacman::p_load(pwr)
+
+# actual per-condition n's in the analytic sample (the 10-minute exclusion is not applied)
+n_cond <- table(df_both$Study, as.character(df_both$ConditionFeedback))
+power_pairs <- tribble(
+  ~Study, ~Comparison,                                      ~n1,                                 ~n2,
+  1,      "Adversarial vs. Belief-Tailored",                n_cond["1", "Adversarial Dialogue"], n_cond["1", "Belief-Tailored"],
+  1,      "Adversarial vs. Belief & Values-Tailored",       n_cond["1", "Adversarial Dialogue"], n_cond["1", "Belief & Values-Tailored"],
+  1,      "Belief-Tailored vs. Belief & Values-Tailored",   n_cond["1", "Belief-Tailored"],      n_cond["1", "Belief & Values-Tailored"],
+  2,      "Control vs. Adversarial",                        n_cond["2", "Control"],              n_cond["2", "Adversarial Dialogue"],
+  2,      "Control vs. Belief-Tailored",                    n_cond["2", "Control"],              n_cond["2", "Belief-Tailored"],
+  2,      "Adversarial vs. Belief-Tailored",                n_cond["2", "Adversarial Dialogue"], n_cond["2", "Belief-Tailored"]
+)
+
+d_expected <- 0.2  # conservative from study 1
+
+power_check <- power_pairs %>%
+  rowwise() %>%
+  mutate(power = pwr.t2n.test(n1 = n1, n2 = n2, d = d_expected,
+                               sig.level = 0.05, alternative = "two.sided")$power) %>%
+  ungroup() %>%
+  mutate(power_pct = paste0(round(power * 100, 1), "%"))
+
+power_check %>%
+  kable(caption = "Post-hoc power to detect d = 0.2 by pairwise condition comparison", align = "l") %>%
+  kable_classic(full_width = FALSE, html_font = "Times New Roman") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"), font_size = 12)
+
+# reverse: what n per arm (equal n) would be needed for 80% power at d = 0.2?
+pwr.t.test(d = d_expected, sig.level = 0.05, power = 0.80, type = "two.sample", alternative = "two.sided") #1180 = 393 *3
+
+#pre-post (paired) version ----
+# type="paired" treats d as Cohen's d_z - the standardized mean of the PRE-POST DIFFERENCE scores (mean_diff / SD_diff), not the same quantity as the between-groups d = 0.2 used
+pwr.t.test(d = d_expected, sig.level = 0.05, power = 0.80, type = "paired", alternative = "two.sided") #594 = 198*3
+pwr.t.test(d = d_expected, sig.level = 0.05, power = 0.90, type = "paired", alternative = "two.sided")#795 = 265*3
+pwr.t.test(d = d_expected, sig.level = 0.05, power = 0.95, type = "paired", alternative = "two.sided") #981 = 327*3
+
+```
+
+### Sensitivity Analysis
+instead of assuming d = 0.2, checks what power we had
+
+```{r sensitivity analysis, warning=FALSE}
+
+sensitivity_check <- power_pairs %>%
+  rowwise() %>%
+  mutate(min_detectable_d = pwr.t2n.test(n1 = n1, n2 = n2, power = 0.80,
+                                          sig.level = 0.05, alternative = "two.sided")$d) %>%
+  ungroup() %>%
+  mutate(min_detectable_d = round(min_detectable_d, 3))
+
+sensitivity_check %>%
+  kable(caption = "Minimum detectable effect size at 80% power", align = "l") %>%
+  kable_classic(full_width = FALSE, html_font = "Times New Roman") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"), font_size = 12)
+
+```

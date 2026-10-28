@@ -1,0 +1,242 @@
+---
+title: "08. Dialogues on Democracy: Results 4, Persuasion Strategies and Argument Quality"
+author: "Shaye"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+    toc: true
+    toc_float: true
+    toc_collapsed: false
+---
+
+GPT's turns in every conversation were coded for 16 persuasion strategies and 5 argument-quality features
+(`02b_llm_strategy_coding.R`, `02c_llm_nuance_coding.R`; this script makes no API calls). Each participant's codes are
+averaged over the conversation and predict post-intervention 2020 Denialism and Claim Certainty. The script writes
+`figures/fig-strategy-quality-significant.png` (manuscript figure), `results/strategy_quality_models.rds` (supplement
+tables) and `data/df_strategy_coded.RData` (cleaned coded turns).
+
+# Set Up
+
+```{r packages & wd, include=FALSE}
+rm(list=ls())
+options(scipen=1, digits=3)
+
+# Locate 4-analysis/ regardless of R's working directory (see 01_cleaning.Rmd)
+local({
+  if (!file.exists(".here") && !file.exists("../.here")) {
+    p <- tryCatch(rstudioapi::getSourceEditorContext()$path, error = function(e) "")
+    if (nzchar(p)) setwd(dirname(p))
+  }
+  here::i_am("scripts/08_results_strategies.Rmd")
+})
+
+knitr::opts_knit$set(root.dir = here::here())
+setwd(here::here())
+
+source(here::here("R", "setup.R"))   # packages, data, reference levels, palettes, outcome vectors
+invisible(lapply(list.files(here::here("R", "cleanresults"), pattern = "[.]R$", full.names = TRUE), source))
+report::report_system()
+
+df_both <- ungroup(df_both)
+df_both$ConditionFeedback <- relevel(df_both$ConditionFeedback, ref = "Control")
+```
+
+```{r constructs}
+strategies <- c("Rapport", "Critical_Thinking", "Alternative_Explanations", "Credible_Sources",
+                "Harm", "Stories_Examples", "Encourage_Empathy", "Socratic_Questioning",
+                "Conflicting_Evidence", "Expert_Consensus", "Common_Ground", "Psychological_Needs",
+                "Inconsistencies_Fallacies", "Analogies_Metaphors", "Maintaining_Patience", "Offer_Resources")
+quality <- c("ArgumentQuality", "Nuance", "Specificity", "Tone", "EvidenceCount")
+items <- c(strategies, quality)
+
+# post hoc theory clusters over the 16 strategies; the quality features form their own group
+clusters <- list(
+  Cognitive  = c("Critical_Thinking", "Alternative_Explanations", "Credible_Sources",
+                 "Conflicting_Evidence", "Expert_Consensus", "Inconsistencies_Fallacies"),
+  Relational = c("Rapport", "Encourage_Empathy", "Common_Ground", "Maintaining_Patience", "Psychological_Needs"),
+  Narrative  = c("Stories_Examples", "Analogies_Metaphors", "Socratic_Questioning", "Harm", "Offer_Resources"))
+
+item_labels <- tibble(construct = items,
+                 label = case_match(construct,
+                   "Stories_Examples"          ~ "Stories & Examples",
+                   "Inconsistencies_Fallacies" ~ "Inconsistencies & Fallacies",
+                   "Analogies_Metaphors"       ~ "Analogies & Metaphors",
+                   "ArgumentQuality"           ~ "Argument Quality",
+                   "EvidenceCount"             ~ "Evidence Count",
+                   .default = str_replace_all(construct, "_", " ")),
+                 cluster = case_when(construct %in% clusters$Cognitive  ~ "Cognitive",
+                                     construct %in% clusters$Relational ~ "Relational",
+                                     construct %in% clusters$Narrative  ~ "Narrative",
+                                     TRUE                               ~ "Argument Quality"))
+```
+
+# Coded conversation features
+
+Nuance is the corrected clear-claim measure (a defensible claim plus acknowledged qualifications; hedging alone does not
+count), re-coded by `02c_llm_nuance_coding.R`.
+
+```{r coded turns}
+nuance_clearclaim <- readRDS(here::here("data", "df_nuance_clearclaim_checkpoint.rds")) %>%
+  transmute(ResponseId, Round = as.numeric(round), Nuance_ClearClaim = as.numeric(Nuance))
+
+df_strategy_long <- readRDS(here::here("data", "df_strategy_coded_checkpoint.rds")) %>%
+  filter(!(parse_error %in% TRUE)) %>%              # parse_error is FALSE or NA (never TRUE) in the checkpoint
+  rename(Round = round) %>%
+  mutate(across(all_of(items), as.numeric), Round = as.numeric(Round)) %>%
+  distinct(ResponseId, Round, .keep_all = TRUE) %>%
+  rename(Nuance_Hedging_Original = Nuance) %>%
+  left_join(nuance_clearclaim, by = c("ResponseId", "Round")) %>%
+  rename(Nuance = Nuance_ClearClaim) %>%
+  mutate(Cognitive_r  = rowMeans(across(all_of(clusters$Cognitive)),  na.rm = TRUE),
+         Relational_r = rowMeans(across(all_of(clusters$Relational)), na.rm = TRUE),
+         Narrative_r  = rowMeans(across(all_of(clusters$Narrative)),  na.rm = TRUE))
+
+save(df_strategy_long, file = here::here("data", "df_strategy_coded.RData"))
+
+# one row per participant: mean of each construct over the conversation (evidence count is also summed)
+dat <- df_strategy_long %>%
+  group_by(ResponseId) %>%
+  summarise(across(all_of(items), ~ mean(.x, na.rm = TRUE), .names = "{.col}_mean"),
+            Cognitive_mean  = mean(Cognitive_r,  na.rm = TRUE),
+            Relational_mean = mean(Relational_r, na.rm = TRUE),
+            Narrative_mean  = mean(Narrative_r,  na.rm = TRUE),
+            EvidenceCount_total = sum(EvidenceCount, na.rm = TRUE)) %>%
+  left_join(df_both, ., by = "ResponseId")
+
+cat(sprintf("%d coded turns from %d conversations\n", nrow(df_strategy_long), n_distinct(df_strategy_long$ResponseId)))
+```
+
+# What predicts belief change?
+
+All 21 constructs enter one model per outcome, together with mean-centered baseline belief, condition and study.
+Standard errors are HC1 robust.
+
+```{r net models}
+outcomes <- tribble(~Outcome,          ~dv,               ~pre,
+                    "2020 Denialism",  "ER0Norm_Post",    "ER0Norm_Pre_center",
+                    "Claim Certainty", "Sureness_Post_1", "Sureness_Pre_center")
+
+net_models <- outcomes %>%
+  mutate(model = map2(dv, pre, ~ lm(reformulate(c(.y, "ConditionFeedback", "Study", paste0(items, "_mean")), response = .x),
+                                    data = dat)),
+         coefs = map(model, ~ broom::tidy(lmtest::coeftest(.x, vcov. = sandwich::vcovHC(.x, type = "HC1")))))
+
+net <- net_models %>%
+  select(Outcome, coefs) %>% unnest(coefs) %>%
+  filter(str_detect(term, "_mean$")) %>%
+  mutate(construct = str_remove(term, "_mean$")) %>%
+  left_join(item_labels, by = "construct") %>%
+  mutate(lwr = estimate - 1.96 * std.error, upr = estimate + 1.96 * std.error,
+         stars = case_when(p.value < .001 ~ "***", p.value < .01 ~ "**", p.value < .05 ~ "*", TRUE ~ ""))
+
+n_obs <- set_names(map_int(net_models$model, nobs), net_models$Outcome)
+n_obs
+
+# cleanresults table
+res_net <- clean_regress(
+  dat,
+  dvs = c(ER0Norm_Post = "linear", Sureness_Post_1 = "linear"),
+  formulas = list(
+    ER0Norm_Post = reformulate(c("ER0Norm_Pre_center", "ConditionFeedback", "Study", paste0(items, "_mean")), response = "ER0Norm_Post"),
+    Sureness_Post_1 = reformulate(c("Sureness_Pre_center", "ConditionFeedback", "Study", paste0(items, "_mean")), response = "Sureness_Post_1")
+  ),
+  vcov_type = "HC1",
+  dv_labels = c(ER0Norm_Post = "2020 Denialism", Sureness_Post_1 = "Claim Certainty")
+)
+
+cr_table(res_net, style = "stargazer")
+```
+
+## Figure: conversation features predicting belief change
+
+Constructs with p < .05 for at least one outcome.
+
+```{r fig-strategy-quality-significant, fig.height=4.5, fig.width=8, warning=FALSE}
+cluster_colors <- c(Cognitive = "#A64521", Relational = "#4158A6", Narrative = "#6A8E7F", `Argument Quality` = "#D9822B")
+
+# order by the effect on 2020 Denialism (strongest reduction at the bottom)
+item_order <- net %>% filter(Outcome == "2020 Denialism") %>% arrange(estimate) %>% pull(label)
+
+fig_strategies <- net %>%
+  group_by(label) %>% filter(any(p.value < .05)) %>% ungroup() %>%
+  mutate(label = factor(label, levels = item_order),
+         lab = if_else(p.value < .05, paste0(str_replace(sprintf("%.1f", estimate), "^-", "−"), stars), NA_character_)) %>%
+  ggplot(aes(x = estimate, y = label, color = cluster)) +
+  geom_vline(xintercept = 0, colour = "darkgray", alpha = .4, linewidth = 0.8, linetype = "dashed") +
+  geom_linerange(aes(xmin = lwr, xmax = upr), linewidth = 1) +
+  geom_point(size = 3.5) +
+  geom_label(aes(x = upr, label = lab), fontface = "bold", na.rm = TRUE, hjust = -0.1, size = 2.9, fill = "white",
+             linewidth = 0, label.padding = unit(0.08, "lines"), show.legend = FALSE) +
+  scale_color_manual(values = cluster_colors) +
+  scale_x_continuous(expand = expansion(mult = c(0.05, 0.3))) +   # right pad leaves room for labels
+  facet_wrap(~Outcome, scales = "free_x") +
+  labs(x = "Effect on post-intervention outcome (b, 95% CI)", y = NULL, color = NULL,
+       title = "Conversation features predicting belief change") +
+  theme_classic() +
+  theme(legend.position = "top")
+fig_strategies
+
+ggsave("figures/fig-strategy-quality-significant.png", fig_strategies, width = 8, height = 5, dpi = 600, create.dir = TRUE)
+```
+
+# Argument quality, tone and condition
+
+```{r aq tone}
+m_aqtone <- lm(ER0Norm_Post ~ ER0Norm_Pre_center + ConditionFeedback + Study +
+  ArgumentQuality_mean * Tone_mean + Nuance_mean + Specificity_mean + EvidenceCount_total +
+  Cognitive_mean + Relational_mean + Narrative_mean, data = dat)
+hc1_aqtone <- sandwich::vcovHC(m_aqtone, type = "HC1")
+
+interaction_row <- broom::tidy(lmtest::coeftest(m_aqtone, vcov. = hc1_aqtone)) %>%
+  filter(term == "ArgumentQuality_mean:Tone_mean") %>%
+  transmute(effect = "Argument Quality x Tone", estimate, std.error, p.value)
+
+# effect of a 1-point increase in Argument Quality at low, mean and high Tone
+tone_sd <- sd(dat$Tone_mean, na.rm = TRUE)
+slopes_tone <- emtrends(m_aqtone, ~ Tone_mean, var = "ArgumentQuality_mean",
+                        at = list(Tone_mean = mean(dat$Tone_mean, na.rm = TRUE) + c(-1, 0, 1) * tone_sd),
+                        vcov. = hc1_aqtone) %>%
+  summary(infer = TRUE) %>% as_tibble() %>%
+  transmute(effect = paste("Argument Quality slope at", c("low Tone (-1 SD)", "mean Tone", "high Tone (+1 SD)")),
+            estimate = ArgumentQuality_mean.trend, std.error = SE, p.value)
+
+interaction_row
+slopes_tone
+```
+
+```{r aq by condition}
+m_cond_aq <- lm(ER0Norm_Post ~ ER0Norm_Pre_center + Study +
+  ConditionFeedback * ArgumentQuality_mean + Tone_mean + Specificity_mean + EvidenceCount_total +
+  Cognitive_mean + Relational_mean + Narrative_mean + Nuance_mean, data = dat)
+
+slopes_condition <- emtrends(m_cond_aq, ~ ConditionFeedback, var = "ArgumentQuality_mean",
+                             vcov. = sandwich::vcovHC(m_cond_aq, type = "HC1")) %>%
+  summary(infer = TRUE) %>% as_tibble() %>%
+  transmute(effect = paste("Argument Quality slope,", ConditionFeedback),
+            estimate = ArgumentQuality_mean.trend, std.error = SE, p.value)
+
+# Joint test: do all Condition x (Quality, Nuance, Tone, Specificity) interactions improve fit over the additive model?
+m_base <- lm(ER0Norm_Post ~ ER0Norm_Pre_center + ConditionFeedback + Study +
+  ArgumentQuality_mean + Nuance_mean + Specificity_mean + Tone_mean + EvidenceCount_total +
+  Cognitive_mean + Relational_mean + Narrative_mean, data = dat)
+m_full <- lm(ER0Norm_Post ~ ER0Norm_Pre_center + Study +
+  ConditionFeedback * (ArgumentQuality_mean + Nuance_mean + Tone_mean + Specificity_mean) +
+  EvidenceCount_total + Cognitive_mean + Relational_mean + Narrative_mean, data = dat)
+m_base <- update(m_base, data = model.frame(m_full))   # same rows as the full model
+joint <- anova(m_base, m_full) %>% broom::tidy() %>% slice(2) %>%
+  transmute(F = statistic, df1 = df, df2 = df.residual, p = p.value)
+
+slopes_condition
+joint
+```
+
+# Save
+
+```{r save}
+interactions <- bind_rows(interaction_row, slopes_tone, slopes_condition)
+
+saveRDS(list(net = net, interactions = interactions, joint = joint, n = n_obs),
+        here::here("results", "strategy_quality_models.rds"))
+```

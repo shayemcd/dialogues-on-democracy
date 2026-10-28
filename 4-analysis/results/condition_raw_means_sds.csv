@@ -1,0 +1,49 @@
+Study,Outcome_Label,Outcome_Var,ConditionFeedback,n_total,pre_n,pre_mean,pre_sd,post_n,post_mean,post_sd,diff_mean,diff_sd
+1,2020 Election Denialism (0-100),ER0Norm_Post,Adversarial Dialogue,399,399,77.9,20.24,381,78.59,20.94,0.64,16.35
+1,2020 Election Denialism (0-100),ER0Norm_Post,Belief & Values-Tailored,419,419,79.77,18.88,379,77.39,22.1,-2.14,17.36
+1,2020 Election Denialism (0-100),ER0Norm_Post,Belief-Tailored,396,396,79.48,18.94,354,76.16,23.86,-3.37,17.63
+1,Claim Certainty (0-100),Sureness_Post_1,Adversarial Dialogue,399,399,87.73,14.89,381,85.48,18.74,-2.37,16.93
+1,Claim Certainty (0-100),Sureness_Post_1,Belief & Values-Tailored,419,419,87.94,14.83,379,83.44,20.75,-4.82,19.15
+1,Claim Certainty (0-100),Sureness_Post_1,Belief-Tailored,396,396,88.46,13.88,355,82.17,20.84,-6.29,20.25
+1,General Denialism (1-4),ER1_Post,Adversarial Dialogue,399,399,3.23,0.7,381,3.14,0.75,-0.1,0.53
+1,General Denialism (1-4),ER1_Post,Belief & Values-Tailored,419,419,3.21,0.72,379,3.12,0.8,-0.09,0.58
+1,General Denialism (1-4),ER1_Post,Belief-Tailored,396,396,3.32,0.65,354,3.13,0.76,-0.2,0.56
+1,Specific Denialism (1-5),ER2_Post,Adversarial Dialogue,399,399,3.69,0.83,381,3.54,0.86,-0.17,0.63
+1,Specific Denialism (1-5),ER2_Post,Belief & Values-Tailored,419,419,3.65,0.81,379,3.47,0.88,-0.18,0.61
+1,Specific Denialism (1-5),ER2_Post,Belief-Tailored,396,396,3.68,0.8,354,3.5,0.89,-0.19,0.63
+1,2020 Denialism Aggregate (0-100),ER2020_Post,Adversarial Dialogue,399,399,74.82,20.7,381,72.39,21.16,-2.7,14.47
+1,2020 Denialism Aggregate (0-100),ER2020_Post,Belief & Values-Tailored,419,419,75.26,19.86,379,70.5,21.92,-4.56,16.12
+1,2020 Denialism Aggregate (0-100),ER2020_Post,Belief-Tailored,396,396,75.21,19.56,354,70.09,22.51,-5.1,16.57
+1,2024 Denialism (1-5),ER2024_Post,Adversarial Dialogue,399,399,3.22,1.09,381,3.07,1.09,-0.17,0.9
+1,2024 Denialism (1-5),ER2024_Post,Belief & Values-Tailored,419,419,3.12,0.98,379,3.05,1.04,-0.08,0.75
+1,2024 Denialism (1-5),ER2024_Post,Belief-Tailored,396,396,3.21,1.02,354,3.12,1.01,-0.09,0.75
+1,Election Denialism Composite (0-100),ER_Post,Adversarial Dialogue,399,399,70.91,19.33,381,67.42,20.56,-3.82,13.71
+1,Election Denialism Composite (0-100),ER_Post,Belief & Values-Tailored,419,419,70.06,18.95,379,66.21,21.34,-3.79,14.05
+1,Election Denialism Composite (0-100),ER_Post,Belief-Tailored,396,396,72.27,17.59,354,66.65,20.74,-5.76,14.48
+1,Affective Polarization (-100 to 100),AffPol_Post,Adversarial Dialogue,399,399,56.51,33.21,380,53.68,34.36,-3.08,19.03
+1,Affective Polarization (-100 to 100),AffPol_Post,Belief & Values-Tailored,419,419,52.92,34.32,379,51.82,33.92,-0.79,18.72
+1,Affective Polarization (-100 to 100),AffPol_Post,Belief-Tailored,396,396,57.13,31.5,354,53.81,33.69,-3.83,17.2
+2,2020 Election Denialism (0-100),ER0Norm_Post,Adversarial Dialogue,191,191,79.72,19.43,167,78.43,20.64,-0.67,14.93
+2,2020 Election Denialism (0-100),ER0Norm_Post,Belief-Tailored,223,223,76.23,17.4,193,75.51,21.18,-1.12,15.08
+2,2020 Election Denialism (0-100),ER0Norm_Post,Control,217,217,77.97,18.46,185,80.42,18.93,1.84,11.89
+2,Claim Certainty (0-100),Sureness_Post_1,Adversarial Dialogue,191,191,87.27,15.19,167,88.06,14.51,0.31,12.56
+2,Claim Certainty (0-100),Sureness_Post_1,Belief-Tailored,223,223,84.21,16.23,193,82.07,18.96,-3.4,16.8
+2,Claim Certainty (0-100),Sureness_Post_1,Control,217,217,86.41,14.85,185,87.23,14,-0.04,9.68
+2,General Denialism (1-4),ER1_Post,Adversarial Dialogue,191,191,3.16,0.78,167,3.15,0.77,-0.01,0.47
+2,General Denialism (1-4),ER1_Post,Belief-Tailored,223,223,3.13,0.7,193,3.03,0.76,-0.11,0.46
+2,General Denialism (1-4),ER1_Post,Control,217,217,3.15,0.74,185,3.12,0.81,-0.04,0.45
+2,Specific Denialism (1-5),ER2_Post,Adversarial Dialogue,191,191,3.61,0.84,167,3.49,0.84,-0.07,0.56
+2,Specific Denialism (1-5),ER2_Post,Belief-Tailored,223,223,3.4,0.78,193,3.24,0.87,-0.17,0.68
+2,Specific Denialism (1-5),ER2_Post,Control,217,217,3.48,0.83,185,3.42,0.81,-0.09,0.64
+2,2020 Denialism Aggregate (0-100),ER2020_Post,Adversarial Dialogue,191,191,72.6,20.22,167,70.31,20.51,-1.12,12.45
+2,2020 Denialism Aggregate (0-100),ER2020_Post,Belief-Tailored,223,223,68.8,18.32,193,66.19,20.74,-3.05,15.9
+2,2020 Denialism Aggregate (0-100),ER2020_Post,Control,217,217,70.61,19.82,185,70.86,19.55,-0.24,13.77
+2,2024 Denialism (1-5),ER2024_Post,Adversarial Dialogue,191,191,3.31,1.03,167,3.17,1.09,-0.11,0.85
+2,2024 Denialism (1-5),ER2024_Post,Belief-Tailored,223,223,2.99,0.97,193,2.8,1.01,-0.19,0.79
+2,2024 Denialism (1-5),ER2024_Post,Control,217,217,3.09,0.98,185,2.97,0.99,-0.16,0.9
+2,Election Denialism Composite (0-100),ER_Post,Adversarial Dialogue,191,191,68.59,20.16,167,66.9,20.01,-1.06,10.57
+2,Election Denialism Composite (0-100),ER_Post,Belief-Tailored,223,223,65.52,18.6,193,61.91,19.93,-3.89,11.66
+2,Election Denialism Composite (0-100),ER_Post,Control,217,217,66.88,19.73,185,65.53,20.42,-1.77,11.21
+2,Affective Polarization (-100 to 100),AffPol_Post,Adversarial Dialogue,191,191,51.7,37.16,167,46.57,37.93,-3.1,21.59
+2,Affective Polarization (-100 to 100),AffPol_Post,Belief-Tailored,223,223,47.79,36.56,193,45.45,38.58,-2.49,22.58
+2,Affective Polarization (-100 to 100),AffPol_Post,Control,217,217,51.52,36.84,184,50.68,38.36,0.74,18.94

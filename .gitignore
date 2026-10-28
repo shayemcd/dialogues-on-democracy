@@ -1,0 +1,113 @@
+# Secrets and environment files
+.env
+.env.*
+!.env.example
+
+# OS / editor junk
+.DS_Store
+.Rhistory
+.RData
+.RDataTmp*
+~$*
+__pycache__/
+*.pyc
+.Rproj.user/
+.ipynb_checkpoints/
+.venv/
+node_modules/
+
+# Quarto / R Markdown build artifacts
+/.quarto/
+_freeze/
+*_files/
+
+# Posit/RStudio local publish state and shinyapps.io deployment records —
+# machine-local, and rsconnect/ can carry account-linking info.
+.posit/
+rsconnect/
+
+# Claude Code scheduler lock file — machine-local state, not project content
+.claude/scheduled_tasks.lock
+
+# Raw data — never commit; contains participant-identifiable Qualtrics exports.
+# Anonymize before promoting into data/ proper.
+**/raw/**
+**/raw data/**
+**/Raw Data/**
+**/raw_data/**
+!**/raw/.gitkeep
+!**/raw/README.md
+!**/raw/original_dfs_shareable.RData
+!**/raw data/.gitkeep
+!**/raw data/README.md
+
+/.luarc.json
+
+# ---- Publish only 4-analysis/ (plus repo meta) ----
+# Whitelist: ignore everything at the repo root except the items below.
+# This also drops the root convenience symlinks (data, figures, scripts,
+# peer-review), the other project phases (1-explore ... 5-disseminate), and the
+# local planning files (.planners/, .pre-commit-config.yaml).
+/*
+!/.gitignore
+!/.env.example
+!/README.md
+!/LICENSE
+!/CITATION.cff
+!/4-analysis/
+
+# Survey instruments: Qualtrics exports (.qsf), printed copies (.docx), specs & docs
+!/2-design/
+/2-design/*
+!/2-design/instrument/
+/2-design/instrument/*
+!/2-design/instrument/*.qsf
+!/2-design/instrument/*.docx
+!/2-design/instrument/*.md
+
+# Superseded / exploratory material inside 4-analysis
+**/ARCHIVE/
+**/_ARCHIVE/
+**/archive/
+**/_archive/
+/4-analysis/data/ARCHIVE/
+/4-analysis/scripts/_ARCHIVE/
+/4-analysis/figures/_intermediate/
+/4-analysis/notes/
+
+# Scratch files
+*.bak
+Rplots.pdf
+.Rapp.history
+/4-analysis/scripts/figures
+/4-analysis/scripts/results/
+# Output of scripts/99_check_manuscript_numbers.R (regenerated on demand)
+/4-analysis/results/manuscript_number_check.csv
+# Duplicate legacy model files (identical copies of models_effects, models_belief_level, models_ceiling)
+/4-analysis/results/models_02_main.rds
+/4-analysis/results/models_03_belief_level.rds
+/4-analysis/results/models_03_ceiling.rds
+# Knitted from the raw (non-shared) data; not published
+/4-analysis/scripts/01_cleaning.html
+
+# Mediation + Causal forest gitignored for now
+/4-analysis/scripts/09_heterogeneity_forests.html
+/4-analysis/scripts/10_mediation.html
+
+# Cleanresults package replication demo
+/4-analysis/scripts/05_results_effects_cleanresults.html
+
+# Full (unabridged) exploratory versions kept locally; only the shortened scripts are published
+*_FULL.Rmd
+*_FULL.html
+
+# Outputs only produced by the unabridged *_FULL.Rmd scripts
+/4-analysis/data/df_efficacy_predictors.RData
+/4-analysis/data/df_argument_quality_coded.xlsx
+
+# Outputs no script reads
+/4-analysis/data/df_aiconspfin.xlsx
+/4-analysis/data/df_clean.xlsx
+/4-analysis/scripts/shiny-app/df_long.RData
+/4-analysis/scripts/shiny-app/df_app.RData
+/4-analysis/scripts/shiny-app/*.RData

@@ -1,0 +1,290 @@
+---
+title: "05b. Dialogues on Democracy: Treatment Effects (cleanresults Replication)"
+author: "Shaye"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: false
+    df_print: paged
+    code_folding: show
+---
+
+This document replicates the primary treatment effect models from `05_results_effects.Rmd` using [`cleanresults`](https://github.com/shayemcd/clean-results). It showcases three table presentation styles:
+
+1. **`stargazer`**: Stacked robust standard errors underneath point estimates, asterisks for significance, explicit reference categories (`—`), and compact columns.
+2. **`apa`**: Standard APA 7th edition layout with separate columns for unstandardized estimate ($b$), 95% Confidence Interval ($[LL, UL]$), and exact $p$-value.
+3. **`compact`**: Space-efficient inline layout ($b^* [95\%\text{ CI}]$) placing estimate, significance stars, and confidence bounds in a single cell per outcome.
+
+# Set Up
+
+```{r packages & wd, message=FALSE, warning=FALSE}
+rm(list=ls())
+options(scipen=1, digits=3)
+
+local({
+  if (!file.exists(".here") && !file.exists("../.here")) {
+    p <- tryCatch(rstudioapi::getSourceEditorContext()$path, error = function(e) "")
+    if (nzchar(p)) setwd(dirname(p))
+  }
+  here::i_am("scripts/05_results_effects_cleanresults.Rmd")
+})
+
+knitr::opts_knit$set(root.dir = here::here())
+setwd(here::here())
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  comment = NA
+)
+
+# Source project setup
+source(here::here("R", "setup.R"))
+
+# Source cleanresults functions
+invisible(lapply(list.files(here::here("R", "cleanresults"), pattern = "[.]R$", full.names = TRUE), source))
+```
+
+```{r baseline mapping}
+# Map each post-intervention DV to its matching raw baseline measure.
+# clean_regress automatically centers each baseline on the analytic sample.
+baseline_map <- setNames(
+  c("ER0Norm_Pre", "Sureness_Pre_1", "ER1_Pre", "ER2_Pre", "ER2020_Pre", "ER2024_Pre", "ER_Pre", "AffPol_Pre"),
+  dvs_post
+)
+
+baseline_map_std <- setNames(
+  c("ER0Norm_Pre", "Sureness_Pre_1", "ER1_Pre", "ER2_Pre", "ER2020_Pre", "ER2024_Pre", "ER_Pre", "AffPol_Pre"),
+  dvs_post_std
+)
+```
+
+# 1. Study 1: Primary Treatment Effects
+
+Regresses post-intervention outcomes on conversational feedback condition (reference: Adversarial Dialogue) and interface type (reference: Chat), adjusting for centered baseline outcome scores. Pairwise contrasts among all three feedback conditions are computed using `clean_regress()`'s integrated contrasts argument with Holm-adjusted $p$-values.
+
+```{r fit study 1}
+res_s1 <- clean_regress(
+  df_consp,
+  dvs = dvs_post,
+  type = "linear",
+  predictors = ~ ConditionFeedback + ConditionChat,
+  baseline = baseline_map,
+  contrasts = "ConditionFeedback",
+  dv_labels = new_labels
+)
+```
+
+## 1.1 Stargazer Style (`style = "stargazer"`)
+
+Stacked robust standard errors with significance asterisks.
+
+```{r s1 stargazer}
+cr_table(res_s1, style = "stargazer")
+```
+
+## 1.2 APA Style (`style = "apa"`)
+
+Separate columns for estimate ($b$), 95% Confidence Interval, and exact $p$-value.
+
+```{r s1 apa}
+cr_table(res_s1, style = "apa")
+```
+
+## 1.3 Compact Style (`style = "compact"`)
+
+Inline combined point estimate, stars, and confidence interval: $b^* [95\%\text{ CI}]$.
+
+```{r s1 compact}
+cr_table(res_s1, style = "compact")
+```
+
+## 1.4 Standalone Pairwise Contrasts Table
+
+Contrasts table extracted directly via `cr_contrast_table()`.
+
+```{r s1 contrasts}
+cr_contrast_table(res_s1, style = "stargazer")
+```
+
+# 2. Study 2: Primary Treatment Effects
+
+Regresses post-intervention outcomes on conversational feedback condition (reference: Cats & Dogs Control), adjusting for centered baseline values. Contrasts evaluate Belief-Tailored and Adversarial Dialogue relative to Control and to each other.
+
+```{r fit study 2}
+res_s2 <- clean_regress(
+  df_consp_2,
+  dvs = dvs_post,
+  type = "linear",
+  predictors = ~ ConditionFeedback,
+  baseline = baseline_map,
+  contrasts = "ConditionFeedback",
+  dv_labels = new_labels
+)
+```
+
+## 2.1 Stargazer Style (`style = "stargazer"`)
+
+```{r s2 stargazer}
+cr_table(res_s2, style = "stargazer")
+```
+
+## 2.2 APA Style (`style = "apa"`)
+
+```{r s2 apa}
+cr_table(res_s2, style = "apa")
+```
+
+## 2.3 Compact Style (`style = "compact"`)
+
+```{r s2 compact}
+cr_table(res_s2, style = "compact")
+```
+
+## 2.4 Standalone Pairwise Contrasts Table
+
+```{r s2 contrasts}
+cr_contrast_table(res_s2, style = "stargazer")
+```
+
+# 3. Standardized Treatment Effects
+
+Standardized ($z$-scored) post-intervention outcomes for cross-outcome effect size comparisons.
+
+```{r standardized models}
+res_s1_std <- clean_regress(
+  df_consp,
+  dvs = dvs_post_std,
+  type = "linear",
+  predictors = ~ ConditionFeedback + ConditionChat,
+  baseline = baseline_map_std,
+  contrasts = "ConditionFeedback",
+  dv_labels = new_labels2
+)
+
+res_s2_std <- clean_regress(
+  df_consp_2,
+  dvs = dvs_post_std,
+  type = "linear",
+  predictors = ~ ConditionFeedback,
+  baseline = baseline_map_std,
+  contrasts = "ConditionFeedback",
+  dv_labels = new_labels2
+)
+```
+
+## 3.1 Study 1: Standardized Outcomes (Compact)
+
+```{r s1 std compact}
+cr_table(res_s1_std, style = "compact")
+```
+
+## 3.2 Study 2: Standardized Outcomes (Compact)
+
+```{r s2 std compact}
+cr_table(res_s2_std, style = "compact")
+```
+
+# 4. Intention-to-Treat (ITT) Models
+
+Missing post-intervention scores are imputed by carrying baseline scores forward.
+
+```{r itt models}
+baseline_map_itt <- setNames(
+  c("ER0Norm_Pre", "Sureness_Pre_1", "ER1_Pre", "ER2_Pre", "ER2020_Pre", "ER2024_Pre", "ER_Pre", "AffPol_Pre"),
+  dvs_post_itt
+)
+
+res_s1_itt <- clean_regress(
+  df_consp,
+  dvs = dvs_post_itt,
+  type = "linear",
+  predictors = ~ ConditionFeedback + ConditionChat,
+  baseline = baseline_map_itt,
+  contrasts = "ConditionFeedback",
+  dv_labels = new_labels_itt
+)
+
+res_s2_itt <- clean_regress(
+  df_consp_2,
+  dvs = dvs_post_itt,
+  type = "linear",
+  predictors = ~ ConditionFeedback,
+  baseline = baseline_map_itt,
+  contrasts = "ConditionFeedback",
+  dv_labels = new_labels_itt
+)
+```
+
+## 4.1 Study 1: ITT (Stargazer Style)
+
+```{r s1 itt stargazer}
+cr_table(res_s1_itt, style = "stargazer")
+```
+
+## 4.2 Study 2: ITT (Stargazer Style)
+
+```{r s2 itt stargazer}
+cr_table(res_s2_itt, style = "stargazer")
+```
+
+# 5. Downstream Voting Likelihood (Study 2)
+
+Evaluates whether conversational AI interventions influenced participants' self-reported likelihood of voting in the 2024 general election (0-100 scale) or candidate preference lean.
+
+```{r voting models}
+df_vote_s2 <- df_both %>% filter(Study == 2)
+
+res_vote <- clean_regress(
+  df_vote_s2,
+  dvs = c(Vote_Post_1 = "linear"),
+  predictors = ~ ConditionFeedback,
+  baseline = c(Vote_Post_1 = "Vote_Pre_1"),
+  contrasts = "ConditionFeedback",
+  dv_labels = c(Vote_Post_1 = "2024 Voting Likelihood (0-100)")
+)
+
+res_lean <- clean_regress(
+  df_both,
+  dvs = c(lean_bidentrump_Post_4 = "linear"),
+  predictors = ~ ConditionFeedback,
+  contrasts = "ConditionFeedback",
+  dv_labels = c(lean_bidentrump_Post_4 = "Vote Lean (Harris vs. Trump)")
+)
+```
+
+## 5.1 Voting Likelihood (APA Style)
+
+```{r vote apa}
+cr_table(res_vote, style = "apa")
+```
+
+## 5.2 Voting Likelihood (Stargazer Style)
+
+```{r vote stargazer}
+cr_table(res_vote, style = "stargazer")
+```
+
+## 5.3 Candidate Preference Lean (Stargazer Style)
+
+```{r lean stargazer}
+cr_table(res_lean, style = "stargazer")
+```
+
+# 6. Dynamic Manuscript Inline Reporting
+
+`cleanresults` provides `cr_inline()` to dynamically embed model estimates, standard errors, confidence intervals, and $p$-values directly into text without manual transcription.
+
+### Example Inline Outputs:
+
+- **Study 1 Belief-Tailored effect on 2020 Denialism**:
+  `r cr_inline(res_s1, dv = "ER0Norm_Post", variable = "ConditionFeedback", level = "Belief tailored")`
+- **Study 1 Belief-Tailored effect on Claim Certainty**:
+  `r cr_inline(res_s1, dv = "Sureness_Post_1", variable = "ConditionFeedback", level = "Belief tailored")`
+- **Study 2 Belief-Tailored effect vs. Control on 2020 Denialism**:
+  `r cr_inline(res_s2, dv = "ER0Norm_Post", variable = "ConditionFeedback", level = "Belief tailored")`
+- **Study 2 Belief-Tailored effect vs. Control on Claim Certainty**:
+  `r cr_inline(res_s2, dv = "Sureness_Post_1", variable = "ConditionFeedback", level = "Belief tailored")`

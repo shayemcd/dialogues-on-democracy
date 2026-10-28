@@ -1,0 +1,1354 @@
+---
+title: "07. Dialogues on Democracy: Results 3, Effects by Baseline Conviction"
+author: "Shaye"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+    toc: true
+    toc_float: true
+    toc_collapsed: false
+---
+
+Manuscript section "Intervention efficacy persists among the most entrenched believers" and Appendix D: condition x baseline
+interactions, GAMs, a shift-function CDF and baseline-adjusted quantile regression, the type-of-change summary, die-hard vs.
+non-die-hard models, ceiling-censoring robustness (Tobit and ceiling-escape models) and random-forest variable importance (a
+robustness comparison; the main-text variable-importance figure comes from `09_heterogeneity_forests.Rmd`). Produces
+`figures/fig-baseline-conviction.png`, `figures/supplement/fig-belief-change.png`, `results/models_belief_level.rds`
+and `results/models_ceiling.rds`.
+
+# Set Up
+
+```{r packages & wd, include=FALSE}
+rm(list=ls())
+
+# Locate 4-analysis/ regardless of R's working directory. here::here() walks up from getwd() to the
+# .here marker in 4-analysis/, so if R was started elsewhere (e.g. your home folder) first move into
+# this file's folder (works from RStudio and VS Code; needs the rstudioapi package).
+local({
+  if (!file.exists(".here") && !file.exists("../.here")) {
+    p <- tryCatch(rstudioapi::getSourceEditorContext()$path, error = function(e) "")
+    if (nzchar(p)) setwd(dirname(p))
+  }
+  here::i_am("scripts/07_results_belief_level.Rmd")
+})
+
+knitr::opts_knit$set(root.dir = here::here())  # relative paths (data/, results/, figures/) resolve to 4-analysis/ when knitting
+setwd(here::here())
+set.seed(42)  # quantile-regression SEs (summary(rq, se = "boot")) and the random forests below are stochastic
+
+source(here::here("R", "setup.R"))   # packages, data, reference levels, palettes, outcome vectors
+invisible(lapply(list.files(here::here("R", "cleanresults"), pattern = "[.]R$", full.names = TRUE), source))
+report::report_system()
+
+# Baseline variable mappings for cleanresults
+baseline_map <- setNames(
+  c("ER0Norm_Pre", "Sureness_Pre_1", "ER1_Pre", "ER2_Pre", "ER2020_Pre", "ER2024_Pre", "ER_Pre", "AffPol_Pre"),
+  dvs_post
+)
+```
+
+```{r diehard subset filters, include=FALSE}
+
+#separate dfs for cohen's d's
+df_consp_limdet <- df_consp %>% filter(ConditionFeedback == "Adversarial Dialogue" | ConditionFeedback == "Belief-Tailored")
+df_consp_limpers <- df_consp %>% filter(ConditionFeedback == "Adversarial Dialogue" | ConditionFeedback == "Belief & Values-Tailored")
+df_consp_detpers <- df_consp %>% filter(ConditionFeedback == "Belief-Tailored" | ConditionFeedback == "Belief & Values-Tailored")
+
+
+df_consp_2_limdet <- df_consp_2 %>% filter(ConditionFeedback == "Belief-Tailored" | ConditionFeedback == "Adversarial Dialogue")
+df_consp_2_limctl <- df_consp_2 %>% filter(ConditionFeedback == "Control" | ConditionFeedback == "Adversarial Dialogue")
+df_consp_2_detctl <- df_consp_2 %>% filter(ConditionFeedback == "Belief-Tailored" | ConditionFeedback == "Control")
+
+table(df_consp_limdet$ConditionFeedback)
+```
+
+```{r regression helper fns, include=FALSE}
+
+#helper: p-value stars ----
+add_stars <- function(p_values) {
+  ifelse(p_values < 0.001, "***",
+         ifelse(p_values < 0.01, "**",
+                ifelse(p_values < 0.05, "*", "")))
+}
+
+#run robust OLS for one DV pair ----
+analyze_regression <- function(dvs_post, dvs_pre, data, study, interaction = FALSE) {
+
+  # Build formula
+  formula_base <- paste(dvs_post, "~", dvs_pre, "+ ConditionFeedback")
+
+  if (interaction) {
+    formula_base <- paste(formula_base, "* ConditionChat")
+  }
+
+  if (study == 1) {
+    formula_base <- paste(formula_base, "+ ConditionChat")
+  }
+
+  formula <- as.formula(formula_base)
+
+  # Fit model
+  model <- lm(formula, data = data)
+
+  # Robust (HC1) variance-cov matrix
+  V <- vcovHC(model, type = "HC1")
+
+  # Robust coefficient test (SE, t, p all robust-consistent)
+  ct <- lmtest::coeftest(model, vcov. = V)
+
+  # Return tidy dataframe
+  out <- tibble::tibble(
+    term      = rownames(ct),
+    estimate  = unname(ct[, 1]),
+    std.error = unname(ct[, 2]),
+    statistic = unname(ct[, 3]),
+    p.value   = unname(ct[, 4]),
+    outcome   = dvs_post
+  )
+
+  out
+}
+
+#combine / format for kable ----
+combine_regression_results <- function(regression_results, study) {
+  bind_rows(regression_results) %>%
+    mutate(Study = study) %>%
+    rename(
+      Term = term,
+      Estimate = estimate,
+      `Robust SE` = std.error,
+      `Robust t` = statistic,
+      `Adj p` = p.value,
+      DV = outcome
+    ) %>%
+    mutate(
+      Significance = add_stars(`Adj p`),
+      `Estimate (SE)` = paste0(
+        format(round(Estimate, 2), nsmall = 2), Significance,
+        " (", format(round(`Robust SE`, 2), nsmall = 2), ")"
+      ),
+      `Adj p` = signif(`Adj p`, 3)
+    ) %>%
+    select(Study, DV, Term, `Estimate (SE)`, `Adj p`)
+}
+
+#1. main models
+
+# ---- shared helpers for tab_model versions of these tables ----
+# builds the same formula analyze_regression() used, but returns it instead of a fitted model,
+# so we can fit + keep the model object itself for tab_model()
+build_formula_legacy <- function(dv, dv_pre, study, interaction = FALSE) {
+  formula_base <- paste(dv, "~", dv_pre, "+ ConditionFeedback")
+  if (interaction) formula_base <- paste(formula_base, "* ConditionChat")
+  if (study == 1) formula_base <- paste(formula_base, "+ ConditionChat")
+  as.formula(formula_base)
+}
+
+# fits one lm() per dv and returns a named list of model objects (name = raw dv variable name),
+# ready to pass straight into tab_model(). Robust HC1 SEs are applied at display time via
+# tab_model(vcov.fun = "vcovHC", vcov.type = "HC1"), not baked into the model object itself.
+fit_model_list <- function(dvs, dvs_pre, data, study, interaction = FALSE) {
+  models <- purrr::map2(dvs, dvs_pre, ~ lm(build_formula_legacy(.x, .y, study, interaction), data = data))
+  names(models) <- dvs
+  models
+}
+```
+
+```{r main models for tobit comparison, include=FALSE}
+
+models_s1 <- fit_model_list(dvs_post, dvs_precenter, df_consp, study = 1)
+models_s2 <- fit_model_list(dvs_post, dvs_precenter, df_consp_2, study = 2)
+
+```
+
+```{r cohens d function, include=FALSE}
+
+calculate_dppc2 <- function(data, pre_col, post_col, group_col) {
+  # Summarize data by group
+  summary_stats <- data %>%
+    group_by({{ group_col }}) %>%
+    summarise(
+      pre_mean = mean({{ pre_col }}, na.rm = TRUE),
+      pre_sd = sd({{ pre_col }}, na.rm = TRUE),
+      post_mean = mean({{ post_col }}, na.rm = TRUE),
+      post_sd = sd({{ post_col }}, na.rm = TRUE),
+      n = n(),
+      .groups = 'drop'
+    )
+  
+  # Extract treatment and control stats
+  T.n <- summary_stats[2, ]$n
+  C.n <- summary_stats[1, ]$n
+  
+  T.sd_pre <- summary_stats[2, ]$pre_sd
+  C.sd_pre <- summary_stats[1, ]$pre_sd
+  
+  T.m_post <- summary_stats[2, ]$post_mean
+  C.m_post <- summary_stats[1, ]$post_mean
+  
+  T.m_pre <- summary_stats[2, ]$pre_mean
+  C.m_pre <- summary_stats[1, ]$pre_mean
+  
+  # Calculate pooled standard deviation
+  sd.pooled <- sqrt(((T.n - 1) * T.sd_pre^2 + (C.n - 1) * C.sd_pre^2) / (T.n + C.n - 2))
+  
+  # Calculate the effect size using Cohen's method
+  yi <- metafor:::.cmicalc(T.n + C.n - 2) * ((T.m_post - T.m_pre) - (C.m_post - C.m_pre)) / sd.pooled
+  
+  # Return a list containing all computed values
+  list(
+    treatment_n = T.n,
+    control_n = C.n,
+    treatment_pre_sd = round(T.sd_pre, 2),
+    control_pre_sd = round(C.sd_pre, 2),
+    treatment_post_mean = round(T.m_post, 2),
+    control_post_mean = round(C.m_post, 2),
+    treatment_pre_mean = round(T.m_pre, 2),
+    control_pre_mean = round(C.m_pre, 2),
+    pooled_sd = round(sd.pooled, 2),
+    effect_size = round(yi, 2)
+  )
+} 
+```
+
+# 1. Change relative to baseline conviction: GAMs & quantile regression
+
+### 1.1. Interaction with baseline belief levels
+```{r 2a. belief level interaction fn, warning=FALSE}
+
+# Robust (HC1) inference + stars; displays "Estimate (SE)" column.
+
+# ---- baseline interaction regression (robust p-values) ----
+analyze_int <- function(dvs_post, dvs_pre, data, study) {
+
+  # dv_post ~ ConditionFeedback * baseline + (ConditionChat if Study 1)
+  formula_base <- paste(dvs_post, "~ ConditionFeedback *", dvs_pre)
+  if (study == 1) formula_base <- paste(formula_base, "+ ConditionChat")
+  formula <- as.formula(formula_base)
+
+  model <- lm(formula, data = data)
+
+  V  <- sandwich::vcovHC(model, type = "HC1")
+  ct <- lmtest::coeftest(model, vcov. = V)
+
+  tibble::tibble(
+    term      = rownames(ct),
+    estimate  = unname(ct[, 1]),
+    std.error = unname(ct[, 2]),
+    statistic = unname(ct[, 3]),
+    p.value   = unname(ct[, 4]),
+    outcome   = dvs_post
+  )
+}
+
+# ---- run interaction models ----
+reg_s1_int <- purrr::map2(dvs_post, dvs_precenter, ~ analyze_int(.x, .y, df_consp,   study = 1))
+reg_s2_int <- purrr::map2(dvs_post, dvs_precenter, ~ analyze_int(.x, .y, df_consp_2, study = 2))
+
+# ---- combine + label (uses combine_regression_results(), which keeps `Estimate (SE)` + stars) ----
+regression_int <- combine_regression_results(reg_s1_int, 1) %>%
+  bind_rows(combine_regression_results(reg_s2_int, 2)) %>%
+  mutate(DV = dplyr::recode(DV, !!!new_labels))
+
+# ---- display: cleanresults stargazer version ----
+res_baseint_s1 <- clean_regress(
+  df_consp,
+  dvs = dvs_post,
+  type = "linear",
+  predictors = ~ ConditionFeedback + ConditionChat,
+  baseline = baseline_map,
+  lin = "ConditionFeedback",
+  vcov_type = "HC1",
+  dv_labels = new_labels
+)
+
+res_baseint_s2 <- clean_regress(
+  df_consp_2,
+  dvs = dvs_post,
+  type = "linear",
+  predictors = ~ ConditionFeedback,
+  baseline = baseline_map,
+  lin = "ConditionFeedback",
+  vcov_type = "HC1",
+  dv_labels = new_labels
+)
+
+cr_table(res_baseint_s1, style = "stargazer")
+cr_table(res_baseint_s2, style = "stargazer")
+
+# Retain legacy model lists for backward compatibility with supplement.qmd
+build_formula_int <- function(dv, dv_pre, study) {
+  formula_base <- paste(dv, "~ ConditionFeedback *", dv_pre)
+  if (study == 1) formula_base <- paste(formula_base, "+ ConditionChat")
+  as.formula(formula_base)
+}
+
+fit_model_list_int <- function(dvs, dvs_pre, data, study) {
+  models <- purrr::map2(dvs, dvs_pre, ~ lm(build_formula_int(.x, .y, study), data = data))
+  names(models) <- dvs
+  models
+}
+
+models_s1_baseint <- fit_model_list_int(dvs_post, dvs_precenter, df_consp, study = 1)
+models_s2_baseint <- fit_model_list_int(dvs_post, dvs_precenter, df_consp_2, study = 2)
+
+if (FALSE) {
+regression_int %>%
+  kable(caption = "Regression Results: Interaction with Baseline Beliefs",
+        align = "l") %>%
+  kable_classic(full_width = FALSE, html_font = "Times New Roman") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"),
+                font_size = 12, fixed_thead = TRUE) %>%
+  collapse_rows(1:2, row_group_label_position = "stack", valign = "top")
+} # end disabled kable block
+
+```
+
+### 1.2. GAMs
+
+```{r 2b. GAMs - rel is mostly linear, include=FALSE}
+
+  #s1
+  #2020 main
+m.s1.er0_gam <- mgcv::gam(ER0Norm_Post ~ ConditionFeedback + s(ER0Norm_Pre_center) + s(ER0Norm_Pre_center, by = ConditionFeedback),  data = df_consp, method = "REML")
+summary(m.s1.er0_gam)
+#AIC(m.s1.er0_gam) 
+#plot(m.s1.er0_gam)
+
+m.s1.sure_gam <- mgcv::gam(
+  Sureness_Post_1 ~ ConditionFeedback + s(Sureness_Pre_center) + s(Sureness_Pre_center, by = ConditionFeedback), data = df_consp, method = "REML")
+#summary(m.s1.sure_gam)
+
+#gen
+m.s1.er1_gam <- mgcv::gam(
+  ER1Norm_Post ~ ConditionFeedback + s(ER1_Pre_center) + s(ER1_Pre_center, by = ConditionFeedback), data = df_consp, method = "REML")
+#summary(m.s1.er1_gam)
+
+#specific
+m.s2.er1_gam <- mgcv::gam(
+  ER1Norm_Post ~ ConditionFeedback + s(ER2_Pre_center) + s(ER2_Pre_center, by = ConditionFeedback), data = df_consp, method = "REML")
+#summary(m.s2.er1_gam)
+
+#2024
+m.s1.er2024_gam <- mgcv::gam(
+  ER2024_Post ~ ConditionFeedback + s(ER2024_Pre, k = 5) + s(ER2024_Pre, by = ConditionFeedback, k = 5), data = df_consp, method = "REML")
+#summary(m.s1.er2024_gam)
+
+m.s1.er2020_gam <- mgcv::gam(
+  ER2024_Post ~ ConditionFeedback + s(ER2020_Pre, k = 5) + s(ER2020_Pre, by = ConditionFeedback, k = 5), data = df_consp, method = "REML")
+#summary(m.s1.er2020_gam)
+
+#specific
+m.s1.er2_gam <- mgcv::gam(
+  ER2Norm_Post ~ ConditionFeedback + s(ER2_Pre_center) + s(ER2_Pre_center, by = ConditionFeedback), data = df_consp, method = "REML")
+#summary(m.s1.er2_gam)
+
+m.s1.eragg_gam <- mgcv::gam(ER_Post ~ ConditionFeedback + s(ERNorm_Pre_center) + s(ERNorm_Pre_center, by = ConditionFeedback),  data = df_consp, method = "REML")
+#summary(m.s1.eragg_gam)
+
+m.s1.ap_gam <- mgcv::gam(
+  AffPol_Post ~ ConditionFeedback + s(AffPol_Pre_center) + s(AffPol_Pre_center, by = ConditionFeedback), data = df_consp, method = "REML")
+#summary(m.s1.ap_gam)
+
+
+
+  #s2
+m.s2.er0_gam <- mgcv::gam(ER0Norm_Post ~ ConditionFeedback + s(ER0Norm_Pre_center) + s(ER0Norm_Pre_center, by = ConditionFeedback),  data = df_consp_2, method = "REML")
+#summary(m.s2.er0_gam)
+
+m.s2.sure_gam <- mgcv::gam(
+  Sureness_Post_1 ~ ConditionFeedback + s(Sureness_Pre_center) + s(Sureness_Pre_center, by = ConditionFeedback), data = df_consp_2, method = "REML")
+#summary(m.s2.sure_gam)
+
+#lim + cats & dogs sig
+m.s2.er1_gam <- mgcv::gam(
+  ER1Norm_Post ~ ConditionFeedback + s(ER1_Pre_center) + s(ER1_Pre_center, by = ConditionFeedback), data = df_consp_2, method = "REML")
+#summary(m.s2.er1_gam)
+
+
+m.s2.er2_gam <- mgcv::gam(
+  ER1Norm_Post ~ ConditionFeedback + s(ER2_Pre_center) + s(ER2_Pre_center, by = ConditionFeedback), data = df_consp_2, method = "REML")
+#summary(m.s2.er2_gam)
+
+
+m.s2.er2024_gam <- mgcv::gam(
+  ER2024_Post ~ ConditionFeedback + s(ER2024_Pre, k = 5) + s(ER2024_Pre, by = ConditionFeedback, k = 5), data = df_consp_2, method = "REML")
+#summary(m.s2.er2024_gam)
+
+m.s2.er2020_gam <- mgcv::gam(
+  ER2024_Post ~ ConditionFeedback + s(ER2020_Pre, k = 5) + s(ER2020_Pre, by = ConditionFeedback, k = 5), data = df_consp_2, method = "REML")
+#summary(m.s2.er2020_gam)
+
+
+m.s2.er2_gam <- mgcv::gam(
+  ER2Norm_Post ~ ConditionFeedback + s(ER2_Pre_center) + s(ER2_Pre_center, by = ConditionFeedback), data = df_consp_2, method = "REML")
+#summary(m.s2.er2_gam)
+
+m.s2.eragg_gam <- mgcv::gam(ER_Post ~ ConditionFeedback + s(ERNorm_Pre_center) + s(ERNorm_Pre_center, by = ConditionFeedback),  data = df_consp_2, method = "REML")
+#summary(m.s2.eragg_gam)
+
+#marginally sig
+m.s2.ap_gam <- mgcv::gam(
+  AffPol_Post ~ ConditionFeedback + s(AffPol_Pre_center) + s(AffPol_Pre_center, by = ConditionFeedback), data = df_consp_2, method = "REML")
+#summary(m.s2.ap_gam)
+
+
+
+# For Study 1
+#AIC(m.s1.er0_gam)
+#AIC(m.s1.eragg_gam)
+#AIC(m.s1.sure_gam)
+
+# For Study 2
+#AIC(m.s2.er0_gam)
+#AIC(m.s2.eragg_gam)
+#AIC(m.s2.sure_gam)
+
+
+#par(mfrow = c(1, 3))
+#plot(m.s1.er0_gam)
+#plot(m.s1.eragg_gam)
+#plot(m.s1.er1_gam)
+#plot(m.s1.er2_gam)
+#plot(m.s1.sure_gam)
+#plot(m.s1.ap_gam)
+
+
+```
+
+```{r 2b. gam summary tables}
+
+tab_model(m.s1.er0_gam, m.s1.sure_gam, 
+          auto.label = T,
+          p.style = "stars",
+          show.ci = F,  vcov.args = list(type = "HC1"),
+          show.se = F,
+          show.stat = T,
+          dv.labels = c("1: 2020 Denialism (Main)", "2: Claim Certainty"),
+          title = "GAMs by Outcome - Study 1")
+
+tab_model(m.s2.er0_gam, m.s2.sure_gam, 
+          auto.label = T,
+          p.style = "stars",
+          show.ci = F,  vcov.args = list(type = "HC1"),
+          show.se = F,
+          show.stat = T,
+          dv.labels = c("1: 2020 Denialism (Main)", "2: Claim Certainty"),
+          title = "GAMs by Outcome - Study 2")
+
+
+
+
+tab_model(m.s1.er0_gam, m.s1.sure_gam, 
+          m.s1.er1_gam, m.s1.er2_gam, 
+          m.s1.er2020_gam, m.s1.er2024_gam,
+          m.s1.eragg_gam, m.s1.ap_gam,
+          auto.label = T,
+          p.style = "stars",
+          show.ci = F,  vcov.args = list(type = "HC1"),
+          show.se = F,
+          show.stat = T,
+          dv.labels = c("1: 2020 Denialism (Main)", "2: Claim Certainty", 
+                        "3: General Denialism", "4: Specific Denialism",
+                        "5: 2020 Denialism (Aggregate)", "6: 2024 Denialism", 
+                        "7: Aggregate Denialism","8: Affective Polarization"),
+          title = "GAMs by Outcome - Study 1")
+
+
+tab_model(m.s2.er0_gam, m.s2.sure_gam, 
+          m.s2.er1_gam, m.s2.er2_gam, 
+          m.s2.er2020_gam, m.s2.er2024_gam,
+          m.s2.eragg_gam, m.s2.ap_gam,
+          auto.label = T,
+          p.style = "stars",
+          show.ci = F,  vcov.args = list(type = "HC1"),
+          show.se = F,
+          show.stat = T,
+          dv.labels = c("1: 2020 Denialism (Main)", "2: Claim Certainty", 
+                        "3: General Denialism", "4: Specific Denialism",
+                        "5: 2020 Denialism (Aggregate)", "6: 2024 Denialism", 
+                        "7: Aggregate Denialism","8: Affective Polarization"),
+          title = "GAMs by Outcome - Study 2")
+
+```
+
+#### Figure: Change by baseline conviction (`fig-baseline-conviction`)
+
+```{r 2b. final gam graphs, fig.height=6, fig.width=10, message=FALSE, warning=FALSE}
+
+df_both2 <- df_both %>% filter(!(is.na(ConditionFeedback)))
+control_label <- "Control"
+
+# predicted change at the die-hard ceiling (baseline = 100), per condition, from each panel's own GAM -- quantifies the regression-to-the-mean 
+gam_ceiling_delta <- function(data, x_var, y_var) {
+  fits <- data %>%
+    filter(!is.na(.data[[x_var]]), !is.na(.data[[y_var]])) %>%
+    group_by(ConditionFeedback) %>%
+    group_modify(~ {
+      fit <- mgcv::gam(reformulate(paste0("s(", x_var, ", bs = \"cs\")"), response = y_var), data = .x)
+      gam_pred <- predict(fit, newdata = setNames(data.frame(100), x_var), se.fit = TRUE)
+      tibble(pred = as.numeric(gam_pred$fit), se = as.numeric(gam_pred$se.fit))
+    }) %>%
+    ungroup()
+  ctl <- fits %>% filter(ConditionFeedback == control_label)
+  fits %>%
+    filter(ConditionFeedback != control_label) %>%
+    mutate(delta = ctl$pred - pred, delta_se = sqrt(se^2 + ctl$se^2)) %>%
+    slice_max(delta, n = 1) %>%
+    mutate(label = sprintf("At the die-hard ceiling:\n%s shows %.1f pp\nmore reduction than Control",
+                            ConditionFeedback, delta, delta_se))
+}
+
+ann_gama <- gam_ceiling_delta(df_both2, "ER0Norm_Pre", "ER0_Diff")
+ann_gamb <- gam_ceiling_delta(df_both2, "Sureness_Pre_1", "Sureness_Diff")
+
+# shared style for the small in-panel stat callouts, kept consistent across all three panels
+ann_style <- list(size = 2.8, color = "gray25", fontface = "plain")
+
+fig.gama <- ggplot(df_both2, aes(x = ER0Norm_Pre, y = ER0_Diff, color = ConditionFeedback, fill = ConditionFeedback)) +
+  #geom_jitter(width = 0.3, height = 0.3, alpha = 0.1, size = 1) +
+  geom_smooth(method = "gam", alpha = .15, linewidth = 0.9) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  #geom_vline(xintercept = 100, linetype = "dotted", color = "gray50") +
+  geom_text(data = ann_gama, aes(label = label), x = Inf, y = Inf, hjust = 1.05, vjust = 1.4,
+            inherit.aes = FALSE, size = ann_style$size, color = ann_style$color, fontface = ann_style$fontface) +
+  labs(x = "2020 Denialism - Pre", y = "2020 Denialism Change",
+       subtitle = "2020 Denialism") +
+  theme_classic() +
+  scale_color_manual(values = condition_colors) +
+  scale_fill_manual(values = condition_colors) +
+  theme(legend.position = "none") #+
+  #ylim(c(-50,50))
+
+fig.gamb <- ggplot(df_both2, aes(x = Sureness_Pre_1, y = Sureness_Diff, color = ConditionFeedback, fill = ConditionFeedback)) +
+  #geom_jitter(width = 0.3, height = 0.3, alpha = 0.1, size = 1) +
+  geom_smooth(method = "gam", alpha = .15, linewidth = 0.9) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  #geom_vline(xintercept = 100, linetype = "dotted", color = "gray50") +
+  geom_text(data = ann_gamb, aes(label = label), x = Inf, y = Inf, hjust = 1.05, vjust = 1.4,
+            inherit.aes = FALSE, size = ann_style$size, color = ann_style$color, fontface = ann_style$fontface) +
+  labs(x = "Claim Certainty - Pre", y = "Claim Certainty Change",
+       subtitle = "Claim Certainty") +
+  theme_classic() +
+  scale_color_manual(values = condition_colors) +
+  scale_fill_manual(values = condition_colors) +
+  theme(legend.position = "none") #+
+  #ylim(c(-50,50))
+
+
+#fig c - shift function: quantile-of-change difference vs. control, per outcome
+# (replaces the raw CDF - shift function comparing quantiles of the condition's distribution directly against control's, so a departure from 0 reflects a real difference, not just shape.)
+df_cdf_long <- df_both %>%
+  filter(!is.na(ConditionFeedback)) %>%
+  pivot_longer(cols = c(ER0_Diff, Sureness_Diff), names_to = "Outcome", values_to = "Value") %>%
+  mutate(Outcome = dplyr::recode(Outcome,
+                                  ER0_Diff = "2020 Denialism",
+                                  Sureness_Diff = "Claim Certainty"),
+         ConditionFeedback = as.character(ConditionFeedback)) %>%
+  filter(!is.na(Value))
+
+shift_qs <- seq(.1, .9, .1)
+shift_R <- 2000
+
+shift_function <- function(ctrl, trt, qs, R) {
+  q_ctrl <- quantile(ctrl, probs = qs, type = 6)
+  q_trt  <- quantile(trt, probs = qs, type = 6)
+  diff <- q_trt - q_ctrl
+  boot <- replicate(R, {
+    cb <- sample(ctrl, length(ctrl), replace = TRUE)
+    tb <- sample(trt, length(trt), replace = TRUE)
+    quantile(tb, probs = qs, type = 6) - quantile(cb, probs = qs, type = 6)
+  })
+  tibble(q = qs, diff = diff,
+         ci_lo = apply(boot, 1, quantile, 0.025),
+         ci_hi = apply(boot, 1, quantile, 0.975))
+}
+
+shift_results <- df_cdf_long %>%
+  group_by(Outcome) %>%
+  group_modify(~ {
+    ctrl_vals <- .x$Value[.x$ConditionFeedback == control_label]
+    active_lvls <- setdiff(unique(.x$ConditionFeedback), control_label)
+    purrr::map_dfr(active_lvls, function(lvl) {
+      shift_function(ctrl_vals, .x$Value[.x$ConditionFeedback == lvl], shift_qs, shift_R) %>%
+        mutate(ConditionFeedback = lvl)
+    })
+  }) %>%
+  ungroup()
+
+fig.cdf <- ggplot(shift_results, aes(x = q, y = diff, color = ConditionFeedback, fill = ConditionFeedback)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_ribbon(aes(ymin = ci_lo, ymax = ci_hi), alpha = 0.15, color = NA) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 2) +
+  facet_wrap(~Outcome) +
+  scale_x_continuous(breaks = shift_qs, labels = scales::percent) +
+  scale_color_manual(values = condition_colors, name = "Condition") +
+  scale_fill_manual(values = condition_colors, name = "Condition") +
+  labs(
+    x = "Quantile of the change-score distribution",
+    y = "Condition - Control difference"
+  ) +
+  theme_classic() +
+  theme(legend.position = "bottom", legend.title = element_blank())
+
+(fig.gama | fig.gamb) 
+
+
+fig2 <- (fig.gama | fig.gamb) / fig.cdf +
+  plot_annotation(tag_levels = "a", tag_suffix = ")") &
+  theme(plot.tag = element_text(size = 12, face = "bold"))
+fig2
+
+
+ggsave("figures/fig-baseline-conviction.png", fig2, width = 8, height = 8, dpi = 600,create.dir = TRUE)
+
+```
+
+```{r fig d1 - quantile regression, warning=FALSE}
+
+# supplement Fig D1: baseline-adjusted quantile regression - condition effect vs. control
+# at each quantile of the change score, controlling for baseline (nets out both regression-
+# to-the-mean AND distribution shape in one model; see fig.cdf above for the unadjusted version)
+pacman::p_load(quantreg)
+
+df_both_qr <- df_both2
+df_both_qr$ConditionFeedback <- relevel(factor(df_both_qr$ConditionFeedback), ref = control_label)
+
+qr_taus <- seq(.1, .9, .1)
+
+run_qr <- function(data, x_var, y_var, outcome_label) {
+  data <- data %>% filter(!is.na(.data[[x_var]]), !is.na(.data[[y_var]]))
+  form <- reformulate(c(x_var, "ConditionFeedback"), response = y_var)
+  fit <- quantreg::rq(form, tau = qr_taus, data = data)
+  s <- summary(fit, se = "boot", R = 500)
+  purrr::map2_dfr(s, qr_taus, function(tau_summary, tau_val) {
+    co <- tau_summary$coefficients
+    rows <- grep("^ConditionFeedback", rownames(co))
+    tibble(
+      ConditionFeedback = sub("^ConditionFeedback", "", rownames(co)[rows]),
+      tau = tau_val,
+      estimate = co[rows, "Value"],
+      se = co[rows, "Std. Error"]
+    )
+  }) %>%
+    mutate(ci_lo = estimate - 1.96 * se, ci_hi = estimate + 1.96 * se, Outcome = outcome_label)
+}
+
+qr_results <- bind_rows(
+  run_qr(df_both_qr, "ER0Norm_Pre", "ER0_Diff", "2020 Denialism"),
+  run_qr(df_both_qr, "Sureness_Pre_1", "Sureness_Diff", "Claim Certainty")
+)
+
+fig.d1 <- ggplot(qr_results, aes(x = tau, y = estimate, color = ConditionFeedback, fill = ConditionFeedback)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_ribbon(aes(ymin = ci_lo, ymax = ci_hi), alpha = 0.15, color = NA) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 1.8) +
+  facet_wrap(~Outcome) +
+  scale_x_continuous(breaks = qr_taus, labels = scales::percent) +
+  scale_color_manual(values = condition_colors, name = "Condition") +
+  scale_fill_manual(values = condition_colors, name = "Condition") +
+  labs(
+    x = "Quantile of change score (adjusted for baseline)",
+    y = "Condition effect vs. Control (pts)"
+  ) +
+  theme_classic() +
+  theme(legend.position = "bottom", legend.title = element_blank())
+
+fig.d1
+
+ggsave("figures/supplement/fig-belief-change.png", fig.d1, width = 8, height = 5, dpi = 600, create.dir = TRUE)
+
+```
+
+
+### 1.3. Type of change summary
+
+```{r 2. summary by type of engager}
+
+summary(df_both$CCDieHard)*100
+summary(df_both$Den2020DieHard)*100
+
+
+prop.table(table(df_both$CCChangeType))*100
+prop.change <- prop.table(table(df_both$CCChangeType, df_both$ConditionFeedback), margin = 2) * 100
+prop.change
+
+#chisq.test(prop.change)
+
+contingency_df <- as.data.frame(prop.change)
+colnames(contingency_df) <- c("CCChangeType", "ConditionFeedback", "Percent")
+
+#supplement fig----
+ggplot(contingency_df, aes(x = ConditionFeedback, y = Percent, fill = CCChangeType)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Condition", y = "% of Population", title = "Change Type by Condition") +
+  theme_classic() +
+  scale_fill_manual(values = c("Decrease" = "#8CB6A9", "Same"  = "lightgray", "Increase" = "#4A5C96")) +
+  geom_text(aes(label = paste0(round(Percent, 2), "%")), 
+            position = position_stack(vjust = 0.5), size = 4, color = "black")
+
+summary(df_both$CCDieHardNoChange)
+summary(df_both$Den2020DieHardNoChange)
+
+
+# Run the Chi-square test
+report(chisq.test(table(df_both$AnyChange, df_both$ConditionFeedback)))
+
+summary(df_both$ConditionFeedback)
+table(df_both$AnyChange)
+
+#74% had change in any denialism score
+prop.table(table(df_both$AnyChange, df_both$ConditionFeedback), margin = 2) * 100
+
+#some sig diffs
+res_anychange <- clean_regress(
+  df_both,
+  dvs = "AnyChange",
+  type = "logistic",
+  predictors = ~ ConditionFeedback,
+  dv_labels = c(AnyChange = "Any Belief Change")
+)
+cr_table(res_anychange, style = "stargazer")
+
+
+```
+
+### 1.4. Die-hards vs. non-die-hards
+
+```{r percent-change helpers, include=FALSE}
+# Copied from 05_results_effects.Rmd ("1. % change fn") so this script is self-contained: the die-hard %-change
+# models below call these and previously failed with "could not find function" unless 02 had been run first.
+analyze_regperc <- function(dvs_post, data, study) {
+  data_clean <- data %>% filter(!is.na(.data[[dvs_post]]) & is.finite(.data[[dvs_post]]))
+  formula <- if (study == 1) {
+    as.formula(paste(dvs_post, "~ ConditionFeedback + ConditionChat"))
+  } else {
+    as.formula(paste(dvs_post, "~ ConditionFeedback"))
+  }
+  model <- lm(formula, data = data_clean)
+  V  <- sandwich::vcovHC(model, type = "HC1")
+  ct <- lmtest::coeftest(model, vcov. = V)
+  tibble::tibble(term = rownames(ct), estimate = unname(ct[, 1]), std.error = unname(ct[, 2]),
+                 statistic = unname(ct[, 3]), p.value = unname(ct[, 4]), outcome = dvs_post)
+}
+
+combine_regperc_results <- function(regression_results, study) {
+  bind_rows(regression_results) %>%
+    mutate(Study = study) %>%
+    rename(Term = term, Estimate = estimate, `Robust SE` = std.error, `Robust t` = statistic, `Adj p` = p.value, DV = outcome) %>%
+    mutate(Significance = add_stars(`Adj p`),
+           `Estimate (SE)` = paste0(format(round(Estimate * 100, 2), nsmall = 2), "%", Significance,
+                                    " (", format(round(`Robust SE` * 100, 2), nsmall = 2), "%)"),
+           `Adj p` = signif(`Adj p`, 3)) %>%
+    select(Study, DV, Term, `Estimate (SE)`, `Adj p`)
+}
+```
+
+```{r 2d. die hard vs non die hard effects}
+# ---- Die-hard models (levels) ----
+res_dh_s1 <- clean_regress(
+  df_consp %>% dplyr::filter(CCDieHard == 1),
+  dvs = dvs_post,
+  type = "linear",
+  predictors = ~ ConditionFeedback + ConditionChat,
+  baseline = baseline_map,
+  vcov_type = "HC1",
+  dv_labels = new_labels
+)
+
+res_dh_s2 <- clean_regress(
+  df_consp_2 %>% dplyr::filter(CCDieHard == 1),
+  dvs = dvs_post,
+  type = "linear",
+  predictors = ~ ConditionFeedback,
+  baseline = baseline_map,
+  vcov_type = "HC1",
+  dv_labels = new_labels
+)
+
+cr_table(res_dh_s1, style = "stargazer")
+cr_table(res_dh_s2, style = "stargazer")
+
+
+# ---- Non-die-hard models (levels) ----
+res_ndh_s1 <- clean_regress(
+  df_consp %>% dplyr::filter(CCDieHard != 1),
+  dvs = dvs_post,
+  type = "linear",
+  predictors = ~ ConditionFeedback + ConditionChat,
+  baseline = baseline_map,
+  vcov_type = "HC1",
+  dv_labels = new_labels
+)
+
+res_ndh_s2 <- clean_regress(
+  df_consp_2 %>% dplyr::filter(CCDieHard != 1),
+  dvs = dvs_post,
+  type = "linear",
+  predictors = ~ ConditionFeedback,
+  baseline = baseline_map,
+  vcov_type = "HC1",
+  dv_labels = new_labels
+)
+
+cr_table(res_ndh_s1, style = "stargazer")
+cr_table(res_ndh_s2, style = "stargazer")
+
+
+# ---- Die-hard models (% change) ----
+res_perc_dh_s1 <- clean_regress(
+  df_consp %>% dplyr::filter(CCDieHard == 1),
+  dvs = dvs_perc,
+  type = "linear",
+  predictors = ~ ConditionFeedback + ConditionChat,
+  vcov_type = "HC1",
+  dv_labels = new_labelsperc
+)
+
+res_perc_dh_s2 <- clean_regress(
+  df_consp_2 %>% dplyr::filter(CCDieHard == 1),
+  dvs = dvs_perc,
+  type = "linear",
+  predictors = ~ ConditionFeedback,
+  vcov_type = "HC1",
+  dv_labels = new_labelsperc
+)
+
+cr_table(res_perc_dh_s1, style = "stargazer")
+cr_table(res_perc_dh_s2, style = "stargazer")
+
+
+# ---- Non-die-hard models (% change) ----
+res_perc_ndh_s1 <- clean_regress(
+  df_consp %>% dplyr::filter(CCDieHard != 1),
+  dvs = dvs_perc,
+  type = "linear",
+  predictors = ~ ConditionFeedback + ConditionChat,
+  vcov_type = "HC1",
+  dv_labels = new_labelsperc
+)
+
+res_perc_ndh_s2 <- clean_regress(
+  df_consp_2 %>% dplyr::filter(CCDieHard != 1),
+  dvs = dvs_perc,
+  type = "linear",
+  predictors = ~ ConditionFeedback,
+  vcov_type = "HC1",
+  dv_labels = new_labelsperc
+)
+
+cr_table(res_perc_ndh_s1, style = "stargazer")
+cr_table(res_perc_ndh_s2, style = "stargazer")
+
+```
+
+```{r save models for supplement, include=FALSE}
+# Everything 5-disseminate/supplement.qmd needs from this script (Tables D1-D4). modelsummary applies the HC1
+# SEs at display time, so re-running this script (and re-rendering the supplement) refreshes those tables.
+dir.create("results", showWarnings = FALSE)
+
+# per-outcome lm fits with the same specification as analyze_regression(). Formulas live in the global environment so
+# the saved models do not drag their calling environment (and a copy of the data) along.
+fit_lm_list <- function(dvs, pres, data, study) {
+  fits <- purrr::map2(dvs, pres, ~ lm(as.formula(paste(.x, "~", .y, "+ ConditionFeedback", if (study == 1) "+ ConditionChat"), env = globalenv()), data = data))
+  names(fits) <- dvs
+  fits
+}
+# treatment x die-hard interaction models (the interaction tests reported in Table D4)
+fit_dh_int_list <- function(dvs, pres, data, study) {
+  fits <- purrr::map2(dvs, pres, ~ lm(as.formula(paste(.x, "~", .y, "+ ConditionFeedback * CCDieHard", if (study == 1) "+ ConditionChat"), env = globalenv()), data = data))
+  names(fits) <- dvs
+  fits
+}
+gam_summary <- function(m) {
+  s <- summary(m)
+  list(p = tibble::rownames_to_column(as.data.frame(s$p.table), "term"),
+       s = tibble::rownames_to_column(as.data.frame(s$s.table), "term"),
+       n = s$n, r2 = s$r.sq)
+}
+d1 <- ungroup(df_consp); d2 <- ungroup(df_consp_2)
+
+out_belief_level <- list(
+  baseint_s1 = models_s1_baseint, baseint_s2 = models_s2_baseint,                          # Table D3
+  gam = list(s1_er0 = gam_summary(m.s1.er0_gam), s1_sure = gam_summary(m.s1.sure_gam),     # Tables D1, D2
+             s2_er0 = gam_summary(m.s2.er0_gam), s2_sure = gam_summary(m.s2.sure_gam)),
+  diehard_s1    = fit_lm_list(dvs_post, dvs_precenter, dplyr::filter(d1, CCDieHard == 1), study = 1),   # Table D4
+  diehard_s2    = fit_lm_list(dvs_post, dvs_precenter, dplyr::filter(d2, CCDieHard == 1), study = 2),
+  nondiehard_s1 = fit_lm_list(dvs_post, dvs_precenter, dplyr::filter(d1, CCDieHard != 1), study = 1),
+  nondiehard_s2 = fit_lm_list(dvs_post, dvs_precenter, dplyr::filter(d2, CCDieHard != 1), study = 2),
+  dh_int_s1 = fit_dh_int_list(dvs_post, dvs_precenter, d1, study = 1),
+  dh_int_s2 = fit_dh_int_list(dvs_post, dvs_precenter, d2, study = 2),
+  n_diehard = list(s1 = table(d1$CCDieHard), s2 = table(d2$CCDieHard)),
+  labels = list(dv = new_labels, dvs_post = dvs_post, dvs_precenter = dvs_precenter)
+)
+saveRDS(out_belief_level, "results/models_belief_level.rds")
+saveRDS(out_belief_level, "results/models_03_belief_level.rds")
+```
+
+```{r die hard ds}
+
+calculate_dppc2(pre_col = ER0Norm_Pre_center, post_col = ER0Norm_Post, group_col = ConditionFeedback, data = df_consp_limdet %>% filter(CCDieHard == 1))
+calculate_dppc2(pre_col = Sureness_Pre_center, post_col = Sureness_Post_1, group_col = ConditionFeedback, data = df_consp_limdet %>% filter(CCDieHard == 1))
+
+calculate_dppc2(pre_col = ER0Norm_Pre_center, post_col = ER0Norm_Post, group_col = ConditionFeedback, data = df_consp_limpers %>% filter(CCDieHard == 1))
+calculate_dppc2(pre_col = Sureness_Pre_center, post_col = Sureness_Post_1, group_col = ConditionFeedback, data = df_consp_limpers %>% filter(CCDieHard == 1))
+
+```
+
+### 1.5. Ceiling-censoring robustness check (Tobit + ceiling-escape)
+
+<!-- The chunk "save ceiling models for supplement" below feeds the supplement's Tobit and ceiling-escape tables.
+Two checks, motivated by the view that a self-reported 100 is a scale ceiling rather than a literally dogmatic prior:
+(1) Tobit models on the full analytic samples that treat 0 and 100 as censoring points rather than hard bounds
+(a Tobit effect that matches OLS in sign but is larger in magnitude would be consistent with OLS being attenuated
+by ceiling censoring); (2) among die-hards, whether they leave the ceiling at all, tested with a logistic model in
+the same style as the AnyChange ~ ConditionFeedback check above (3.3). -->
+
+#### Tobit: is OLS attenuated by ceiling censoring?
+
+```{r 2e. tobit vs ols, warning=FALSE}
+
+# left/right = 0/100: both headline DVs (2020 Denialism, Claim Certainty) are 0-100 scales with
+# mass at the ceiling among die-hards. Uses the *same* formula as the main OLS models
+# (build_formula(), defined earlier - see "1. main models") so the treatment coefficient is
+# directly comparable to models_s1/models_s2 above; only the estimator changes (OLS vs. censored
+# MLE via survival::survreg under the hood).
+
+tobit_dvs     <- c("ER0Norm_Post", "Sureness_Post_1")
+tobit_dvs_pre <- c("ER0Norm_Pre_center", "Sureness_Pre_center")
+
+# AER::tobit() fails on newer survival versions (its match.call()/eval() re-dispatch to survreg()), so
+# survival::survreg() is called directly on an interval-censored response built by make_surv() below.
+# Left/right censoring at 0/100 is Surv(low, high, type = "interval2"): interior values are exact
+# (low == high == value), a value at or above 100 is right-censored (low = 100, high = NA), and a value
+# at or below 0 is left-censored (low = NA, high = 0). This is the model AER::tobit() would fit.
+
+make_surv <- function(y, left = 0, right = 100) {
+  # ER0Norm_Post / Sureness_Post_1 carry the `labelled` class (Hmisc/labelled variable labels),
+  # which dplyr::case_when() refuses to combine with a plain double (NA_real_) - strip it to the
+  # underlying numeric values first. as.numeric() is safe here (unlike for a factor/categorical
+  # labelled column): these are labelled *doubles*, so it returns the actual scores, not codes.
+  y <- as.numeric(y)
+  low  <- dplyr::case_when(y <= left ~ NA_real_, y >= right ~ right, TRUE ~ y)
+  high <- dplyr::case_when(y <= left ~ left,     y >= right ~ NA_real_, TRUE ~ y)
+  survival::Surv(low, high, type = "interval2")
+}
+
+build_formula_tobit <- function(dv, dv_pre, study) {
+  formula_base <- paste0("make_surv(", dv, ", left = 0, right = 100) ~ ", dv_pre, " + ConditionFeedback")
+  if (study == 1) formula_base <- paste(formula_base, "+ ConditionChat")
+  as.formula(formula_base)
+}
+
+fit_tobit_list <- function(dvs, dvs_pre, dat, study) {
+  models <- purrr::map2(dvs, dvs_pre, function(dv, dv_pre) {
+    survival::survreg(build_formula_tobit(dv, dv_pre, study), data = dat, dist = "gaussian")
+  })
+  names(models) <- dvs
+  models
+}
+
+tobit_s1 <- fit_tobit_list(tobit_dvs, tobit_dvs_pre, df_consp,   study = 1)
+tobit_s2 <- fit_tobit_list(tobit_dvs, tobit_dvs_pre, df_consp_2, study = 2)
+
+# Manual OLS-vs-Tobit comparison via broom::tidy(); tab_model() below gives a formatted version of the
+# Tobit models alone (the vcov.fun="vcovHC" override used elsewhere is only defined for lm).
+compare_ols_tobit <- function(dv, ols_models, tobit_models, study) {
+  ols_tidy <- broom::tidy(ols_models[[dv]]) %>% mutate(Model = "OLS")
+  tobit_tidy <- broom::tidy(tobit_models[[dv]]) %>%
+    filter(term != "Log(scale)") %>%
+    mutate(Model = "Tobit (0/100 censored)")
+  bind_rows(ols_tidy, tobit_tidy) %>%
+    mutate(Study = study, DV = dplyr::recode(dv, !!!new_labels)) %>%
+    select(Study, DV, Model, term, estimate, std.error, p.value)
+}
+
+tobit_compare <- bind_rows(
+  purrr::map_dfr(tobit_dvs, compare_ols_tobit, ols_models = models_s1, tobit_models = tobit_s1, study = 1),
+  purrr::map_dfr(tobit_dvs, compare_ols_tobit, ols_models = models_s2, tobit_models = tobit_s2, study = 2)
+) %>%
+  filter(!str_detect(term, "Intercept")) %>%
+  mutate(across(c(estimate, std.error, p.value), ~ round(.x, 3)))
+
+tobit_compare %>%
+  kable(caption = "OLS vs. Tobit (0/100-Censored) Treatment Coefficients", align = "l") %>%
+  kable_classic(full_width = FALSE, html_font = "Times New Roman") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"), font_size = 12, fixed_thead = TRUE) %>%
+  collapse_rows(1:3, row_group_label_position = "stack", valign = "top")
+
+# Formatted tab_model() version, Tobit models only - intentionally omits vcov.fun/vcov.type
+# (HC1/vcovHC is not defined for survreg objects); the OLS side already has HC1 SEs applied in
+# the main results tables above (see "1. main models").
+tab_model(tobit_s1,
+          col.order = c("est","se","p"),
+          dv.labels = new_labels[tobit_dvs],
+          title = "Study 1: Tobit (0/100-Censored) Models")
+
+tab_model(tobit_s2,
+          col.order = c("est","se","p"),
+          dv.labels = new_labels[tobit_dvs],
+          title = "Study 2: Tobit (0/100-Censored) Models")
+
+```
+
+#### Ceiling-escape: do die-hards move at all?
+
+```{r 2f. ceiling escape, warning=FALSE}
+
+# Restricted to participants who started at the literal ceiling (CCDieHard/Den2020DieHard == 1,
+# defined earlier as Sureness_Pre_1 == 100 / ER0Norm_Pre == 100). Because they start at the max,
+# their Diff score can only be <= 0, so "escaped the ceiling" is equivalent to "any negative
+# movement," which is equivalent to NOT already being flagged by the existing *DieHardNoChange
+# variables - reusing that existing logic/variable rather than redefining it a second way.
+
+df_consp_escape   <- df_consp   %>% mutate(CC_Escaped  = if_else(CCDieHard == 1, 1 - CCDieHardNoChange, NA_real_),
+                                            Den_Escaped = if_else(Den2020DieHard == 1, 1 - Den2020DieHardNoChange, NA_real_))
+df_consp_2_escape <- df_consp_2 %>% mutate(CC_Escaped  = if_else(CCDieHard == 1, 1 - CCDieHardNoChange, NA_real_),
+                                            Den_Escaped = if_else(Den2020DieHard == 1, 1 - Den2020DieHardNoChange, NA_real_))
+
+m.escape.cc.s1  <- glm(CC_Escaped  ~ ConditionFeedback, family = binomial(link = "logit"),
+                        data = df_consp_escape   %>% filter(CCDieHard == 1))
+m.escape.cc.s2  <- glm(CC_Escaped  ~ ConditionFeedback, family = binomial(link = "logit"),
+                        data = df_consp_2_escape %>% filter(CCDieHard == 1))
+m.escape.den.s1 <- glm(Den_Escaped ~ ConditionFeedback, family = binomial(link = "logit"),
+                        data = df_consp_escape   %>% filter(Den2020DieHard == 1))
+m.escape.den.s2 <- glm(Den_Escaped ~ ConditionFeedback, family = binomial(link = "logit"),
+                        data = df_consp_2_escape %>% filter(Den2020DieHard == 1))
+
+# raw escape rates by condition, for interpretability alongside the model output
+df_consp_escape   %>% filter(CCDieHard == 1)      %>% group_by(ConditionFeedback) %>% summarise(n = n(), pct_escaped = mean(CC_Escaped,  na.rm = TRUE) * 100)
+df_consp_2_escape %>% filter(CCDieHard == 1)      %>% group_by(ConditionFeedback) %>% summarise(n = n(), pct_escaped = mean(CC_Escaped,  na.rm = TRUE) * 100)
+df_consp_escape   %>% filter(Den2020DieHard == 1) %>% group_by(ConditionFeedback) %>% summarise(n = n(), pct_escaped = mean(Den_Escaped, na.rm = TRUE) * 100)
+df_consp_2_escape %>% filter(Den2020DieHard == 1) %>% group_by(ConditionFeedback) %>% summarise(n = n(), pct_escaped = mean(Den_Escaped, na.rm = TRUE) * 100)
+
+res_escape_cc_s1 <- clean_regress(df_consp_escape %>% filter(CCDieHard == 1), dvs = "CC_Escaped", type = "logistic", predictors = ~ ConditionFeedback, dv_labels = c(CC_Escaped = "Study 1 CC Escaped"))
+res_escape_cc_s2 <- clean_regress(df_consp_2_escape %>% filter(CCDieHard == 1), dvs = "CC_Escaped", type = "logistic", predictors = ~ ConditionFeedback, dv_labels = c(CC_Escaped = "Study 2 CC Escaped"))
+cr_table(res_escape_cc_s1, style = "stargazer")
+cr_table(res_escape_cc_s2, style = "stargazer")
+
+res_escape_den_s1 <- clean_regress(df_consp_escape %>% filter(Den2020DieHard == 1), dvs = "Den_Escaped", type = "logistic", predictors = ~ ConditionFeedback, dv_labels = c(Den_Escaped = "Study 1 Denialism Escaped"))
+res_escape_den_s2 <- clean_regress(df_consp_2_escape %>% filter(Den2020DieHard == 1), dvs = "Den_Escaped", type = "logistic", predictors = ~ ConditionFeedback, dv_labels = c(Den_Escaped = "Study 2 Denialism Escaped"))
+cr_table(res_escape_den_s1, style = "stargazer")
+cr_table(res_escape_den_s2, style = "stargazer")
+
+```
+
+```{r save ceiling models for supplement, include=FALSE}
+# Everything 5-disseminate/supplement.qmd needs for the ceiling-robustness tables (Tobit vs. OLS; ceiling escape among
+# die-hards). Saved as tidy results rather than model objects: survreg/glm objects carry their calling environment.
+dir.create("results", showWarnings = FALSE)
+
+# OLS (HC1) and Tobit (0/100-censored) side by side for every non-intercept term. Tobit SEs are given two ways: the
+# model-based SEs used in the comparison table above and Huber sandwich SEs (survreg(robust = TRUE)), which are the
+# like-for-like counterpart of the HC1 SEs reported for OLS everywhere else.
+tobit_rows <- function(dv, dv_pre, dat, study, ols_models) {
+  f     <- build_formula_tobit(dv, dv_pre, study)
+  naive <- summary(survival::survreg(f, data = dat, dist = "gaussian"))$table
+  rob   <- summary(survival::survreg(f, data = dat, dist = "gaussian", robust = TRUE))$table
+  ols   <- modelsummary::get_estimates(ols_models[[dv]], vcov = "HC1")
+  y     <- as.numeric(dat[[dv]])
+  n_ols <- nobs(ols_models[[dv]])   # computed outside tibble(): inside it, `dv` would be the new column
+  keep  <- setdiff(rownames(naive), c("(Intercept)", "Log(scale)"))
+  keep  <- keep[!is.na(naive[keep, "Value"])]   # factor levels absent from this study's data (aliased, NA coefficient)
+  tibble::tibble(
+    study = study, dv = dv, term = keep,
+    ols_b = ols$estimate[match(keep, ols$term)], ols_se = ols$std.error[match(keep, ols$term)], ols_p = ols$p.value[match(keep, ols$term)],
+    tobit_b = naive[keep, "Value"],
+    tobit_se_model = naive[keep, "Std. Error"], tobit_p_model = naive[keep, "p"],
+    tobit_se_robust = rob[keep, "Std. Err"],    tobit_p_robust = rob[keep, "p"],
+    n = n_ols, n_at_0 = sum(y <= 0, na.rm = TRUE), n_at_100 = sum(y >= 100, na.rm = TRUE)
+  )
+}
+tobit_res <- dplyr::bind_rows(
+  purrr::map2_dfr(tobit_dvs, tobit_dvs_pre, ~ tobit_rows(.x, .y, df_consp,   1, models_s1)),
+  purrr::map2_dfr(tobit_dvs, tobit_dvs_pre, ~ tobit_rows(.x, .y, df_consp_2, 2, models_s2))
+)
+
+# ceiling escape: raw rates by condition, the logit coefficients, and the omnibus likelihood-ratio test of condition
+escape_res <- function(model, dat, diehard_flag, escaped) {
+  d <- dat %>% dplyr::ungroup() %>% dplyr::filter(.data[[diehard_flag]] == 1)
+  list(coef  = broom::tidy(model) %>% dplyr::select(term, estimate, std.error, p.value),
+       rates = d %>% dplyr::filter(!is.na(ConditionFeedback)) %>% dplyr::group_by(ConditionFeedback) %>%
+         dplyr::summarise(n = sum(!is.na(.data[[escaped]])), pct_escaped = mean(.data[[escaped]], na.rm = TRUE) * 100, .groups = "drop") %>% dplyr::filter(n > 0) %>% dplyr::mutate(ConditionFeedback = as.character(ConditionFeedback)),
+       lrt_p = drop1(model, test = "LRT")[["Pr(>Chi)"]][2], n = nobs(model))
+}
+out_ceiling <- list(
+  tobit  = tobit_res,
+  escape = list(cc_s1  = escape_res(m.escape.cc.s1,  df_consp_escape,   "CCDieHard",      "CC_Escaped"),
+                cc_s2  = escape_res(m.escape.cc.s2,  df_consp_2_escape, "CCDieHard",      "CC_Escaped"),
+                den_s1 = escape_res(m.escape.den.s1, df_consp_escape,   "Den2020DieHard", "Den_Escaped"),
+                den_s2 = escape_res(m.escape.den.s2, df_consp_2_escape, "Den2020DieHard", "Den_Escaped")),
+  labels = list(dv = new_labels)
+)
+saveRDS(out_ceiling, "results/models_ceiling.rds")
+saveRDS(out_ceiling, "results/models_03_ceiling.rds")
+```
+
+# 2. Random forest variable importance
+
+#### Supplementary Figure: Random Forests Plot
+```{r 4. random forest, warning=FALSE}
+
+#random forests version----
+# Fit random forest model with missing data handling
+df_consp_clean <- df_consp %>%
+  mutate(across(where(is.character), as.factor))
+
+rf_label_map <- c(
+  "ConditionFeedback" = "Condition: AI Feedback Type",
+  "ConditionChat" = "Condition: Interface",
+  
+  "ER0Norm_Pre_center" = "2020 Denialism (Pre)",
+  "ERNorm_Pre_center" = "Election Denialism (Aggregate, pre)",
+  "ER1_Pre_center" = "General Denialism (Pre)",
+  "ER2_Pre_center" = "Specific Denialism (Pre)",
+  "Sureness_Pre_center" = "Claim Certainty (Pre)",
+  "AffPol_Pre" = "Affective Polarization (Pre)",
+  
+  "Race" = "Race",
+  "Age" = "Age",
+  "GenderClean" = "Gender",
+  "Education" = "Education",
+  "religion" = "Religion",
+  
+  "DemRep_C.text" = "Political Orientation",
+  "EconomicConservatism" = "Economic Conservatism",
+  "SocialConservatism" = "Social Conservatism",
+  "VoteMethod.text" = "Voting Method 2020",
+  "PartyAffil.text" = "Party Affiliation",
+  "PartyReg.text" = "Party Registration",
+  "VoteFor2020.clean" = "2020 Vote Choice",
+  "Vote_1" = "Vote (Pre)",
+  
+  "InstTrust_USGov" = "Trust in U.S. Gov",
+  "InstTrust_CivilService" = "Trust in Civil Service",
+  "InstTrust_Media" = "Trust in Media",
+  "InstTrust_Banks" = "Trust in Banks",
+  "InstTrust_MajorCompanies" = "Trust in Major Companies",
+  
+  "genai_trust" = "AI Trust",
+  "genai_fam_1" = "AI Familiarity",
+  "genai_use_1" = "AI Use"
+)
+
+clean_rf_var <- function(x, label_map) {
+  mapped <- x %in% names(label_map)
+  x[mapped] <- label_map[x[mapped]]
+  x[!mapped] <- gsub("_", " ", x[!mapped])
+  x[!mapped] <- gsub("\\.", " ", x[!mapped])
+  x
+}
+
+
+  ##M1----
+
+# Fit random forest models and plot importance (separately)
+
+# 2020 Denialism (Main)
+cat("Fitting Random Forest for Outcome: ER0Norm_Post
+")
+rf_model_er0 <- randomForest(
+  formula = ER0Norm_Post ~ ConditionFeedback + ConditionChat + 
+    ER0Norm_Pre_center + ERNorm_Pre_center + ER1_Pre_center + ER2_Pre_center + Sureness_Pre_center + AffPol_Pre + Race + Age + GenderClean + Education + religion + DemRep_C.text + EconomicConservatism + SocialConservatism + VoteMethod.text + AffPol_Pre + PartyAffil.text + PartyReg.text + VoteFor2020.clean + VoteMethod.text + Vote_1 + InstTrust_USGov + InstTrust_CivilService + InstTrust_Media + InstTrust_Banks + InstTrust_MajorCompanies + genai_trust + genai_fam_1 + genai_use_1,
+  data = df_consp_clean,
+  importance = TRUE,
+  na.action = na.roughfix
+)
+importance_df_er0 <- as.data.frame(importance(rf_model_er0))
+importance_df_er0$Variable <- rownames(importance_df_er0)
+importance_df_er0$Variable <- clean_rf_var(importance_df_er0$Variable, rf_label_map)
+importance_df_er0 <- importance_df_er0[order(importance_df_er0$`%IncMSE`, decreasing = TRUE), ]
+fig_rf_er0 <- ggplot(importance_df_er0 %>% filter(`%IncMSE` > 0), aes(x = reorder(Variable, `%IncMSE`), y = `%IncMSE`)) +
+  geom_bar(stat = "identity", fill = "#0B1B66", color = "#0B1B66") +
+  coord_flip() +
+  labs(
+    title = "2020 Denialism (Main): variable importance by % increase in MSE",
+    x = "Variables",
+    y = "% Increase in MSE"
+  ) +
+  theme_classic()
+fig_rf_er0
+
+ggsave("figures/supplement/fig-rf-importance-2020denialism.png", fig_rf_er0, width = 8, height = 5, dpi = 600, create.dir = TRUE)
+
+# Claim Certainty
+cat("Fitting Random Forest for Outcome: Sureness_Post_1
+")
+rf_model_sure <- randomForest(
+  formula = Sureness_Post_1 ~ ConditionFeedback + ConditionChat + 
+    ER0Norm_Pre_center + ERNorm_Pre_center + ER1_Pre_center + ER2_Pre_center + Sureness_Pre_center + AffPol_Pre + Race + Age + GenderClean + Education + religion + DemRep_C.text + EconomicConservatism + SocialConservatism + VoteMethod.text + AffPol_Pre + PartyAffil.text + PartyReg.text + VoteFor2020.clean + VoteMethod.text + Vote_1 + InstTrust_USGov + InstTrust_CivilService + InstTrust_Media + InstTrust_Banks + InstTrust_MajorCompanies + genai_trust + genai_fam_1 + genai_use_1,
+  data = df_consp_clean,
+  importance = TRUE,
+  na.action = na.roughfix
+)
+importance_df_sure <- as.data.frame(importance(rf_model_sure))
+importance_df_sure$Variable <- rownames(importance_df_sure)
+importance_df_sure$Variable <- clean_rf_var(importance_df_sure$Variable, rf_label_map)
+importance_df_sure <- importance_df_sure[order(importance_df_sure$`%IncMSE`, decreasing = TRUE), ]
+fig_rf_sure <- ggplot(importance_df_sure %>% filter(`%IncMSE` > 0), aes(x = reorder(Variable, `%IncMSE`), y = `%IncMSE`)) +
+  geom_bar(stat = "identity", fill = "#0B1B66", color = "#0B1B66") +
+  coord_flip() +
+  labs(
+    title = "Claim Certainty: variable importance by % increase in MSE",
+    x = "Variables",
+    y = "% Increase in MSE"
+  ) +
+  theme_classic()
+fig_rf_sure
+
+# General Denialism
+cat("Fitting Random Forest for Outcome: ER1_Post
+")
+rf_model_er1 <- randomForest(
+  formula = ER1_Post ~ ConditionFeedback + ConditionChat + 
+    ER0Norm_Pre_center + ERNorm_Pre_center + ER1_Pre_center + ER2_Pre_center + Sureness_Pre_center + AffPol_Pre + Race + Age + GenderClean + Education + religion + DemRep_C.text + EconomicConservatism + SocialConservatism + VoteMethod.text + AffPol_Pre + PartyAffil.text + PartyReg.text + VoteFor2020.clean + VoteMethod.text + Vote_1 + InstTrust_USGov + InstTrust_CivilService + InstTrust_Media + InstTrust_Banks + InstTrust_MajorCompanies + genai_trust + genai_fam_1 + genai_use_1,
+  data = df_consp_clean,
+  importance = TRUE,
+  na.action = na.roughfix
+)
+importance_df_er1 <- as.data.frame(importance(rf_model_er1))
+importance_df_er1$Variable <- rownames(importance_df_er1)
+importance_df_er1$Variable <- clean_rf_var(importance_df_er1$Variable, rf_label_map)
+importance_df_er1 <- importance_df_er1[order(importance_df_er1$`%IncMSE`, decreasing = TRUE), ]
+fig_rf_er1 <- ggplot(importance_df_er1 %>% filter(`%IncMSE` > 0), aes(x = reorder(Variable, `%IncMSE`), y = `%IncMSE`)) +
+  geom_bar(stat = "identity", fill = "#0B1B66", color = "#0B1B66") +
+  coord_flip() +
+  labs(
+    title = "General Denialism: variable importance by % increase in MSE",
+    x = "Variables",
+    y = "% Increase in MSE"
+  ) +
+  theme_classic()
+fig_rf_er1
+
+# Specific Denialism
+cat("Fitting Random Forest for Outcome: ER2_Post
+")
+rf_model_er2 <- randomForest(
+  formula = ER2_Post ~ ConditionFeedback + ConditionChat + 
+    ER0Norm_Pre_center + ERNorm_Pre_center + ER1_Pre_center + ER2_Pre_center + Sureness_Pre_center + AffPol_Pre + Race + Age + GenderClean + Education + religion + DemRep_C.text + EconomicConservatism + SocialConservatism + VoteMethod.text + AffPol_Pre + PartyAffil.text + PartyReg.text + VoteFor2020.clean + VoteMethod.text + Vote_1 + InstTrust_USGov + InstTrust_CivilService + InstTrust_Media + InstTrust_Banks + InstTrust_MajorCompanies + genai_trust + genai_fam_1 + genai_use_1,
+  data = df_consp_clean,
+  importance = TRUE,
+  na.action = na.roughfix
+)
+importance_df_er2 <- as.data.frame(importance(rf_model_er2))
+importance_df_er2$Variable <- rownames(importance_df_er2)
+importance_df_er2$Variable <- clean_rf_var(importance_df_er2$Variable, rf_label_map)
+importance_df_er2 <- importance_df_er2[order(importance_df_er2$`%IncMSE`, decreasing = TRUE), ]
+fig_rf_er2 <- ggplot(importance_df_er2 %>% filter(`%IncMSE` > 0), aes(x = reorder(Variable, `%IncMSE`), y = `%IncMSE`)) +
+  geom_bar(stat = "identity", fill = "#0B1B66", color = "#0B1B66") +
+  coord_flip() +
+  labs(
+    title = "Specific Denialism: variable importance by % increase in MSE",
+    x = "Variables",
+    y = "% Increase in MSE"
+  ) +
+  theme_classic()
+fig_rf_er2
+
+# 2020 Denialism (Aggregate)
+cat("Fitting Random Forest for Outcome: ER2020_Post
+")
+rf_model_er2020 <- randomForest(
+  formula = ER2020_Post ~ ConditionFeedback + ConditionChat + 
+    ER0Norm_Pre_center + ERNorm_Pre_center + ER1_Pre_center + ER2_Pre_center + Sureness_Pre_center + AffPol_Pre + Race + Age + GenderClean + Education + religion + DemRep_C.text + EconomicConservatism + SocialConservatism + VoteMethod.text + AffPol_Pre + PartyAffil.text + PartyReg.text + VoteFor2020.clean + VoteMethod.text + Vote_1 + InstTrust_USGov + InstTrust_CivilService + InstTrust_Media + InstTrust_Banks + InstTrust_MajorCompanies + genai_trust + genai_fam_1 + genai_use_1,
+  data = df_consp_clean,
+  importance = TRUE,
+  na.action = na.roughfix
+)
+importance_df_er2020 <- as.data.frame(importance(rf_model_er2020))
+importance_df_er2020$Variable <- rownames(importance_df_er2020)
+importance_df_er2020$Variable <- clean_rf_var(importance_df_er2020$Variable, rf_label_map)
+importance_df_er2020 <- importance_df_er2020[order(importance_df_er2020$`%IncMSE`, decreasing = TRUE), ]
+fig_rf_er2020 <- ggplot(importance_df_er2020 %>% filter(`%IncMSE` > 0), aes(x = reorder(Variable, `%IncMSE`), y = `%IncMSE`)) +
+  geom_bar(stat = "identity", fill = "#0B1B66", color = "#0B1B66") +
+  coord_flip() +
+  labs(
+    title = "2020 Denialism (Aggregate): variable importance by % increase in MSE",
+    x = "Variables",
+    y = "% Increase in MSE"
+  ) +
+  theme_classic()
+fig_rf_er2020
+
+# 2024 Denialism
+cat("Fitting Random Forest for Outcome: ER2024_Post
+")
+rf_model_er2024 <- randomForest(
+  formula = ER2024_Post ~ ConditionFeedback + ConditionChat + 
+    ER0Norm_Pre_center + ERNorm_Pre_center + ER1_Pre_center + ER2_Pre_center + Sureness_Pre_center + AffPol_Pre + Race + Age + GenderClean + Education + religion + DemRep_C.text + EconomicConservatism + SocialConservatism + VoteMethod.text + AffPol_Pre + PartyAffil.text + PartyReg.text + VoteFor2020.clean + VoteMethod.text + Vote_1 + InstTrust_USGov + InstTrust_CivilService + InstTrust_Media + InstTrust_Banks + InstTrust_MajorCompanies + genai_trust + genai_fam_1 + genai_use_1,
+  data = df_consp_clean,
+  importance = TRUE,
+  na.action = na.roughfix
+)
+importance_df_er2024 <- as.data.frame(importance(rf_model_er2024))
+importance_df_er2024$Variable <- rownames(importance_df_er2024)
+importance_df_er2024$Variable <- clean_rf_var(importance_df_er2024$Variable, rf_label_map)
+importance_df_er2024 <- importance_df_er2024[order(importance_df_er2024$`%IncMSE`, decreasing = TRUE), ]
+fig_rf_er2024 <- ggplot(importance_df_er2024 %>% filter(`%IncMSE` > 0), aes(x = reorder(Variable, `%IncMSE`), y = `%IncMSE`)) +
+  geom_bar(stat = "identity", fill = "#0B1B66", color = "#0B1B66") +
+  coord_flip() +
+  labs(
+    title = "2024 Denialism: variable importance by % increase in MSE",
+    x = "Variables",
+    y = "% Increase in MSE"
+  ) +
+  theme_classic()
+fig_rf_er2024
+
+# Election Denialism (Aggregate)
+cat("Fitting Random Forest for Outcome: ER_Post
+")
+rf_model_eragg <- randomForest(
+  formula = ER_Post ~ ConditionFeedback + ConditionChat + 
+    ER0Norm_Pre_center + ERNorm_Pre_center + ER1_Pre_center + ER2_Pre_center + Sureness_Pre_center + AffPol_Pre + Race + Age + GenderClean + Education + religion + DemRep_C.text + EconomicConservatism + SocialConservatism + VoteMethod.text + AffPol_Pre + PartyAffil.text + PartyReg.text + VoteFor2020.clean + VoteMethod.text + Vote_1 + InstTrust_USGov + InstTrust_CivilService + InstTrust_Media + InstTrust_Banks + InstTrust_MajorCompanies + genai_trust + genai_fam_1 + genai_use_1,
+  data = df_consp_clean,
+  importance = TRUE,
+  na.action = na.roughfix
+)
+importance_df_eragg <- as.data.frame(importance(rf_model_eragg))
+importance_df_eragg$Variable <- rownames(importance_df_eragg)
+importance_df_eragg$Variable <- clean_rf_var(importance_df_eragg$Variable, rf_label_map)
+importance_df_eragg <- importance_df_eragg[order(importance_df_eragg$`%IncMSE`, decreasing = TRUE), ]
+fig_rf_eragg <- ggplot(importance_df_eragg %>% filter(`%IncMSE` > 0), aes(x = reorder(Variable, `%IncMSE`), y = `%IncMSE`)) +
+  geom_bar(stat = "identity", fill = "#0B1B66", color = "#0B1B66") +
+  coord_flip() +
+  labs(
+    title = "Election Denialism (Aggregate): variable importance by % increase in MSE",
+    x = "Variables",
+    y = "% Increase in MSE"
+  ) +
+  theme_classic()
+fig_rf_eragg
+
+# Affective Polarization
+cat("Fitting Random Forest for Outcome: AffPol_Post
+")
+rf_model_ap <- randomForest(
+  formula = AffPol_Post ~ ConditionFeedback + ConditionChat + 
+    ER0Norm_Pre_center + ERNorm_Pre_center + ER1_Pre_center + ER2_Pre_center + Sureness_Pre_center + AffPol_Pre + Race + Age + GenderClean + Education + religion + DemRep_C.text + EconomicConservatism + SocialConservatism + VoteMethod.text + AffPol_Pre + PartyAffil.text + PartyReg.text + VoteFor2020.clean + VoteMethod.text + Vote_1 + InstTrust_USGov + InstTrust_CivilService + InstTrust_Media + InstTrust_Banks + InstTrust_MajorCompanies + genai_trust + genai_fam_1 + genai_use_1,
+  data = df_consp_clean,
+  importance = TRUE,
+  na.action = na.roughfix
+)
+importance_df_ap <- as.data.frame(importance(rf_model_ap))
+importance_df_ap$Variable <- rownames(importance_df_ap)
+importance_df_ap$Variable <- clean_rf_var(importance_df_ap$Variable, rf_label_map)
+importance_df_ap <- importance_df_ap[order(importance_df_ap$`%IncMSE`, decreasing = TRUE), ]
+fig_rf_ap <- ggplot(importance_df_ap %>% filter(`%IncMSE` > 0), aes(x = reorder(Variable, `%IncMSE`), y = `%IncMSE`)) +
+  geom_bar(stat = "identity", fill = "#0B1B66", color = "#0B1B66") +
+  coord_flip() +
+  labs(
+    title = "Affective Polarization: variable importance by % increase in MSE",
+    x = "Variables",
+    y = "% Increase in MSE"
+  ) +
+  theme_classic()
+fig_rf_ap
+
+
+```

@@ -1,0 +1,462 @@
+---
+title: "05. Dialogues on Democracy: Causal Forests - Variable Importance"
+author: "Shaye"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+    toc: true
+    toc_float: true
+    toc_collapsed: false
+---
+
+<style>
+.main-container {
+  max-width: 1600px !important;
+}
+</style>
+
+Causal-forest (`grf::causal_forest`) estimates of treatment-effect heterogeneity, with SHAP variable importance
+(`fastshap`, `nsim = 50`), for 8 outcome x study x treatment-arm combinations. The forests are slow
+(`num.trees = 2000`), so the analysis can be knit on its own.
+
+For each combination the script runs `grf::test_calibration()` (an omnibus test of whether the forest detected any
+treatment-effect heterogeneity) and `grf::best_linear_projection()` (per-covariate tests). The beeswarm plots show every
+predictor ranked by SHAP importance; covariates with BLP `p < .05` are starred on their label, because SHAP importance is
+not itself a significance test. The text above each plot reports the omnibus calibration p-value and the number of
+starred covariates. With this many simultaneous tests, a few starred covariates are expected by chance, so they should not
+be reported as findings without a multiplicity correction. The final section ("Headline Figure") re-fits SHAP at
+`max_display = 12` for the two Belief-Tailored-vs.-control contrasts on the primary outcome and saves `figures/supplement/fig-causal-forest.png`.
+`09b_heterogeneity_checks.R` adds further diagnostics and writes the table used in the supplement.
+
+# Set Up
+
+```{r packages, include=FALSE}
+
+if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
+library(pacman)
+
+pacman::p_load(tidyverse, forcats, labelled, grf, fastshap, shapviz, stringr, patchwork)
+
+local({
+  if (!file.exists(".here") && !file.exists("../.here")) {
+    p <- tryCatch(rstudioapi::getSourceEditorContext()$path, error = function(e) "")
+    if (nzchar(p)) setwd(dirname(p))
+  }
+  here::i_am("scripts/09_heterogeneity_forests.Rmd")
+})
+
+knitr::opts_knit$set(root.dir = here::here())  # relative paths (data/, results/, figures/) resolve to 4-analysis/ when knitting
+setwd(here::here())
+
+```
+
+```{r data loading, include=FALSE, warning=FALSE}
+
+load(here::here("data", "clean_dfs.RData"))
+
+```
+
+```{r labels, include=FALSE}
+
+# Defined here rather than in R/setup.R so this script and 09b_heterogeneity_checks.R need only the few packages loaded above.
+
+new_labels <- c("ER0Norm_Post"    = "2020 Denialism (Main)",
+                "Sureness_Post_1" = "Claim Certainty",
+                "ER_Post"         = "Election Denialism (Aggregate)",
+                "ER1_Post"        = "General Denialism",
+                "ER2_Post"        = "Specific Denialism",
+                "ER2020_Post"     = "2020 Denialism (Aggregate)",
+                "ER2024_Post"     = "2024 Denialism",
+                "AffPol_Post"     = "Affective Polarization")
+
+rf_label_map <- c(
+  "ConditionFeedback" = "Condition: AI Feedback Type",
+  "ConditionChat" = "Condition: Interface",
+  "ER0Norm_Pre_center" = "2020 Denialism (Pre)",
+  "ERNorm_Pre_center" = "Election Denialism (Aggregate, pre)",
+  "ER1_Pre_center" = "General Denialism (Pre)",
+  "ER2_Pre_center" = "Specific Denialism (Pre)",
+  "Sureness_Pre_center" = "Claim Certainty (Pre)",
+  "AffPol_Pre" = "Affective Polarization (Pre)",
+  "Race" = "Race",
+  "Age" = "Age",
+  "GenderClean" = "Gender",
+  "Education" = "Education",
+  "religion" = "Religion",
+  "DemRep_C.text" = "Political Orientation",
+  "EconomicConservatism" = "Economic Conservatism",
+  "SocialConservatism" = "Social Conservatism",
+  "VoteMethod.text" = "Voting Method 2020",
+  "PartyAffil.text" = "Party Affiliation",
+  "PartyReg.text" = "Party Registration",
+  "VoteFor2020.clean" = "2020 Vote Choice",
+  "Vote_1" = "Vote (Pre)",
+  "InstTrust_USGov" = "Trust in U.S. Gov",
+  "InstTrust_CivilService" = "Trust in Civil Service",
+  "InstTrust_Media" = "Trust in Media",
+  "InstTrust_Banks" = "Trust in Banks",
+  "InstTrust_MajorCompanies" = "Trust in Major Companies",
+  "genai_trust" = "AI Trust",
+  "genai_fam_1" = "AI Familiarity",
+  "genai_use_1" = "AI Use"
+)
+
+```
+
+# Causal Forests
+
+```{r causal forest, eval=TRUE, results='asis'}
+
+# Trimmed to the two headline DVs (2020 Denialism, Claim Certainty).
+# Restore to `dvs_post` for all 8 outcomes.
+cf_outcomes <- c("ER0Norm_Post", "Sureness_Post_1")
+cf_tune <- FALSE
+cf_num_trees <- 2000
+
+cf_predictors_base <- c(
+  "ER0Norm_Pre_center", "ERNorm_Pre_center", "ER1_Pre_center", "ER2_Pre_center",
+  "Sureness_Pre_center", "AffPol_Pre", "Race", "Age", "GenderClean", "Education",
+  "religion", "DemRep_C.text", "EconomicConservatism", "SocialConservatism",
+  "VoteMethod.text", "PartyAffil.text", "PartyReg.text", "VoteFor2020.clean",
+  "Vote_1", "InstTrust_USGov", "InstTrust_CivilService",
+  "InstTrust_Media", "InstTrust_Banks", "InstTrust_MajorCompanies",
+  "genai_trust", "genai_fam_1", "genai_use_1"
+)
+
+# Study 1 has interface variation (Qualtrics vs. Chat); Study 2 does not.
+cf_predictors_s1 <- c("ConditionChat", cf_predictors_base)
+cf_predictors_s2 <- cf_predictors_base
+
+# Study 1's control is Adversarial Dialogue (no Control rows exist there).
+# Study 2's control is Control (cats & dogs), with Adversarial Dialogue as a second treatment arm.
+# Each study is run separately so no comparison crosses studies without shared
+# randomization behind it.
+cf_control_level_s1 <- "Adversarial Dialogue"
+cf_treatment_levels_s1 <- c("Belief-Tailored", "Belief & Values-Tailored")
+
+cf_control_level_s2 <- "Control"
+cf_treatment_levels_s2 <- c("Belief-Tailored", "Adversarial Dialogue")
+
+cf_label_map <- rf_label_map
+
+clean_mm_var <- function(var_name, label_map) {
+  label_map_clean <- setNames(unname(label_map), gsub("\\.", "_", names(label_map)))
+  name <- gsub("\\.", "_", var_name)
+  matches <- names(label_map_clean)[vapply(names(label_map_clean), function(b) startsWith(name, b), logical(1))]
+
+  if (length(matches) > 0) {
+    base <- matches[which.max(nchar(matches))]
+    level <- substring(name, nchar(base) + 1)
+    level <- gsub("^_", "", level)
+    level <- gsub("_", " ", level)
+    if (nzchar(level)) {
+      return(paste0(label_map_clean[[base]], ": ", level))
+    }
+    return(label_map_clean[[base]])
+  }
+
+  name <- gsub("_", " ", name)
+  name <- gsub("(?<=[a-z])(?=[A-Z])", " ", name, perl = TRUE)
+  name
+}
+
+coerce_labelled <- function(x) {
+  if (!any(grepl("labelled", class(x)))) {
+    return(x)
+  }
+  labs <- labelled::val_labels(x)
+  if (length(labs) == 0) {
+    # A factor's levels are its labels -- as.numeric() on a factor returns raw
+    # integer codes, not category names, so preserve factors (and characters)
+    # via as.character() rather than falling through to as.numeric().
+    if (is.character(x) || is.factor(x)) {
+      return(as.character(x))
+    }
+    return(as.numeric(x))
+  }
+  labelled::to_factor(x, levels = "labels")
+}
+
+# Colors are per-DV so plots for the two outcomes are visually distinguishable
+# at a glance: navy (the paper's primary color) for the main DV, teal (the
+# paper's existing secondary color, colpal.2 in the parent script) for the
+# secondary one. Falls back to navy for any outcome not listed.
+cf_dv_colors <- list(
+  ER0Norm_Post    = list(low = "#AEB9E0", high = "#0B1B66"),
+  Sureness_Post_1 = list(low = "#B7E4DF", high = "#20A49C")
+)
+
+sig_stars <- function(p) {
+  dplyr::case_when(
+    is.na(p) ~ "",
+    p < .001 ~ "***",
+    p < .01  ~ "**",
+    p < .05  ~ "*",
+    TRUE ~ ""
+  )
+}
+
+run_cf_shap <- function(data, outcome, treat_level, control_level, predictors, label_map, min_n = 50, max_display = Inf) {
+  cf_data <- data %>%
+    filter(ConditionFeedback %in% c(treat_level, control_level)) %>%
+    select(all_of(c(outcome, "ConditionFeedback", predictors))) %>%
+    filter(!is.na(.data[[outcome]]))
+
+  y_vec <- cf_data[[outcome]]
+  if (any(grepl("labelled", class(y_vec)))) {
+    y_vec <- labelled::unlabelled(y_vec, user_na_to_na = TRUE)
+  }
+  if (is.factor(y_vec)) {
+    y_vec <- as.numeric(as.character(y_vec))
+  } else {
+    y_vec <- as.numeric(y_vec)
+  }
+
+  x_df <- cf_data %>%
+    select(-all_of(outcome)) %>%
+    mutate(across(everything(), coerce_labelled)) %>%
+    mutate(across(where(is.character), ~tidyr::replace_na(.x, "Missing"))) %>%
+    mutate(across(where(is.character), as.factor)) %>%
+    mutate(across(where(is.factor), ~forcats::fct_na_value_to_level(.x, level = "Missing")))
+
+  keep <- !is.na(y_vec) & is.finite(y_vec)
+  if (!all(keep)) {
+    y_vec <- y_vec[keep]
+    x_df <- x_df[keep, , drop = FALSE]
+  }
+
+  num_cols <- names(x_df)[vapply(x_df, is.numeric, logical(1))]
+  for (col in num_cols) {
+    if (all(is.na(x_df[[col]]))) {
+      next
+    }
+    med <- median(x_df[[col]], na.rm = TRUE)
+    x_df[[col]][is.na(x_df[[col]])] <- med
+  }
+
+  if (nrow(x_df) < min_n || length(unique(x_df$ConditionFeedback)) < 2) {
+    message("Skipping ", outcome, " (", treat_level, " vs ", control_level, "): insufficient data")
+    return(invisible(NULL))
+  }
+
+  # model.matrix(~0+.) needs every factor to have >=2 observed levels in this
+  # specific filtered subset, or its contrasts break -- which column degenerates
+  # can differ across the 8 outcome x study x treatment combinations this loop runs.
+  predictor_cols <- setdiff(names(x_df), "ConditionFeedback")
+  constant_cols <- predictor_cols[vapply(predictor_cols, function(col) {
+    length(unique(stats::na.omit(x_df[[col]]))) < 2
+  }, logical(1))]
+  if (length(constant_cols) > 0) {
+    message("Dropping constant predictor(s) for ", outcome, " (", treat_level, " vs ", control_level, "): ",
+            paste(constant_cols, collapse = ", "))
+    x_df <- x_df %>% select(-all_of(constant_cols))
+  }
+
+  W <- as.integer(x_df$ConditionFeedback == treat_level)
+
+  fit_result <- tryCatch({
+    X <- model.matrix(~ 0 + ., data = x_df %>% select(-ConditionFeedback))
+    X <- as.matrix(X)
+    storage.mode(X) <- "double"
+    Y <- y_vec
+
+    cf_model <- grf::causal_forest(
+      X, Y, W,
+      tune.parameters = if (cf_tune) "all" else "none",
+      num.trees = cf_num_trees,
+      seed = 1234
+    )
+    list(X = X, Y = Y, cf_model = cf_model)
+  }, error = function(e) {
+    message("FAILED for ", outcome, " (", treat_level, " vs ", control_level, "): ", conditionMessage(e))
+    NULL
+  })
+
+  if (is.null(fit_result)) {
+    return(invisible(NULL))
+  }
+  X <- fit_result$X
+  Y <- fit_result$Y
+  cf_model <- fit_result$cf_model
+
+  # Omnibus test: is there any real treatment-effect heterogeneity here at
+  # all? (differential.forest.prediction significant = yes.) This doesn't
+  # identify which covariate drives it -- that's what BLP is for below -- but
+  # it's the honest check on whether the beeswarm's spread is signal or noise.
+  cal <- tryCatch(grf::test_calibration(cf_model), error = function(e) e)
+  cal_p <- if (inherits(cal, "error")) NA_real_ else cal["differential.forest.prediction", "Pr(>t)"]
+
+  # Per-covariate significance via best_linear_projection(), grf's own
+  # recommended inferential tool for "which covariates predict the treatment
+  # effect" (unlike SHAP importance, which has no null distribution attached).
+  # This is ANNOTATION, not a filter: every predictor still gets plotted below
+  # (full descriptive picture, same as before), significant ones just get
+  # stars on their label. An earlier version hard-filtered to p<.05 only --
+  # but with every one of the 8 combos failing the omnibus calibration test,
+  # that left 5/8 plots empty and the other 3 showing 1-3 rows out of 38-52,
+  # which threw out the exploratory value the full picture had.
+  #
+  # Two gotchas in mapping p-values back to X's columns, both found by
+  # actually running this on the real 52-column S1 predictor set before
+  # trusting it:
+  # 1. best_linear_projection() builds a data.frame(A) internally, which
+  #    applies make.names(unique=TRUE) to column names -- silently turning
+  #    spaces into periods (e.g. "DemRep_C.textLean Republican" becomes
+  #    "DemRep_C.textLean.Republican" in blp's rownames). String-matching
+  #    raw colnames(X) against that would miss every multi-word dummy column.
+  # 2. It can also silently DROP columns that are collinear/aliased in this
+  #    specific filtered subset (52 in, 43 rows out was observed) -- so row
+  #    count isn't guaranteed to match ncol(X) either; those columns just get
+  #    no star (NA p-value), same treatment as a non-significant one.
+  # Fix: build a mangled-name -> original-name lookup with the same
+  # make.names() call blp uses internally, then look up only the rownames
+  # blp actually returned.
+  blp <- tryCatch(grf::best_linear_projection(cf_model, A = X), error = function(e) e)
+  if (inherits(blp, "error")) {
+    message("best_linear_projection() failed for ", outcome, " (", treat_level, " vs ", control_level, "): ", conditionMessage(blp))
+    pvals <- setNames(rep(NA_real_, ncol(X)), colnames(X))
+  } else {
+    name_lookup <- setNames(colnames(X), make.names(colnames(X), unique = TRUE))
+    blp_rows <- setdiff(rownames(blp), "(Intercept)")
+    pvals <- setNames(rep(NA_real_, ncol(X)), colnames(X))
+    pvals[name_lookup[blp_rows]] <- blp[blp_rows, "Pr(>|t|)"]
+  }
+  n_sig <- sum(!is.na(pvals) & pvals < .05)
+
+  pred_wrapper <- function(object, newdata) {
+    predict(object, as.matrix(newdata))$predictions
+  }
+
+  set.seed(1234)
+  shap_vals <- fastshap::explain(
+    cf_model,
+    X = as.data.frame(X),
+    pred_wrapper = pred_wrapper,
+    nsim = 50,
+    adjust = TRUE
+  )
+
+  # Drop any feature that's NA on every SHAP simulation (fastshap can produce
+  # these for degenerate dummy columns) before handing off to shapviz, which
+  # otherwise errors on all-NA columns.
+  keep_feat <- !apply(shap_vals, 2, function(col) all(is.na(col)))
+  shap_vals <- shap_vals[, keep_feat, drop = FALSE]
+  X <- X[, keep_feat, drop = FALSE]
+
+  # Clean + wrap variable names, append significance stars from BLP (blank for
+  # non-significant/untested columns), applied identically to shap_vals and X
+  # so shapviz can match them by name.
+  raw_cols <- colnames(shap_vals)
+  clean_names <- vapply(raw_cols, clean_mm_var, character(1), label_map = label_map)
+  clean_names <- stringr::str_wrap(clean_names, width = 40)
+  clean_names <- paste0(clean_names, " ", vapply(pvals[raw_cols], sig_stars, character(1)))
+  colnames(shap_vals) <- clean_names
+  X_named <- as.data.frame(X)
+  colnames(X_named) <- clean_names
+
+  outcome_label <- dplyr::recode(outcome, !!!new_labels, .default = outcome)
+  col_pair <- cf_dv_colors[[outcome]]
+  if (is.null(col_pair)) col_pair <- list(low = "#AEB9E0", high = "#0B1B66")
+
+  title_text <- stringr::str_wrap(
+    paste0("SHAP: ", outcome_label, " (", treat_level, " vs ", control_level, ")"),
+    width = 55
+  )
+
+  sv <- shapviz::shapviz(shap_vals, X = X_named)
+  p <- shapviz::sv_importance(sv, kind = "beeswarm", max_display = max_display) +
+    scale_color_gradient(low = col_pair$low, high = col_pair$high, name = "Feature value") +
+    labs(title = title_text) +
+    theme_classic() +
+    theme(
+      text = element_text(size = 12),
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      axis.text.y = element_text(size = 11),
+      plot.margin = margin(t = 15, r = 15, b = 10, l = 10)
+    )
+
+  list(plot = p, n_features = ncol(shap_vals), n_sig = n_sig, n_tested = ncol(X), cal_p = cal_p)
+}
+
+cf_base_s1 <- df_both %>% filter(Study == 1)
+cf_base_s2 <- df_both %>% filter(Study == 2)
+
+cf_shap_results <- list()
+
+# fig.width/fig.height set per-plot via knitr::opts_current$set() just before
+# each print() -- the 8 combos have different feature counts (constant
+# predictors get dropped per-subset), so a single fixed chunk-level size
+# either crops the biggest plots or wastes space on the smaller ones.
+emit_cf_plot <- function(res, study_label, outcome_label, treat_level, control_level, key) {
+  if (is.null(res)) {
+    return(invisible(NULL))
+  }
+  cat("\n\n#### ", study_label, ": ", outcome_label, " -- ", treat_level, " vs. ", control_level, "\n\n", sep = "")
+  cal_txt <- if (is.na(res$cal_p)) "calibration test failed" else paste0("omnibus heterogeneity test (differential.forest.prediction) p = ", format.pval(res$cal_p, digits = 3))
+  cat("*", cal_txt, "; ", res$n_sig, " of ", res$n_tested, " covariates significant in the best linear projection (p < .05, starred on the plot below).*\n\n", sep = "")
+
+  cf_shap_results[[key]] <<- res$plot
+  knitr::opts_current$set(fig.width = 11, fig.height = max(6, res$n_features * 0.26 + 2))
+  print(res$plot)
+  cat("\n\n---\n\n")
+}
+
+for (outcome in cf_outcomes) {
+  outcome_label <- dplyr::recode(outcome, !!!new_labels, .default = outcome)
+  for (treat_level in cf_treatment_levels_s1) {
+    res <- run_cf_shap(cf_base_s1, outcome, treat_level, cf_control_level_s1, cf_predictors_s1, cf_label_map)
+    emit_cf_plot(res, "Study 1", outcome_label, treat_level, cf_control_level_s1, paste("S1", outcome, treat_level, sep = "_"))
+  }
+  for (treat_level in cf_treatment_levels_s2) {
+    res <- run_cf_shap(cf_base_s2, outcome, treat_level, cf_control_level_s2, cf_predictors_s2, cf_label_map)
+    emit_cf_plot(res, "Study 2", outcome_label, treat_level, cf_control_level_s2, paste("S2", outcome, treat_level, sep = "_"))
+  }
+}
+
+# cf_shap_results is keyed "S{study}_{outcome}_{treatment}", e.g.
+# cf_shap_results[["S1_ER0Norm_Post_Belief-Tailored"]]. The full all-covariate
+# beeswarms above (max_display = Inf, 38-52 predictors each) are the
+# Supplement's exhaustive record of all 8 outcome x study x arm combinations.
+
+```
+
+# Headline Figure: 2020 Denialism, Belief-Tailored vs. Study Control
+
+```{r headline figure, eval=TRUE}
+
+# A single readable figure rather than all 38-52 covariates: re-fit SHAP at max_display = 12 (top predictors by
+# mean |SHAP|) for the two flagship Belief-Tailored-vs.-control contrasts on the primary outcome. The full 52/38-covariate
+# versions of the same two comparisons are in cf_shap_results (S1_ER0Norm_Post_Belief-Tailored,
+# S2_ER0Norm_Post_Belief-Tailored).
+
+headline_s1 <- run_cf_shap(cf_base_s1, "ER0Norm_Post", "Belief-Tailored",
+                            cf_control_level_s1, cf_predictors_s1, cf_label_map,
+                            max_display = 12)
+headline_s2 <- run_cf_shap(cf_base_s2, "ER0Norm_Post", "Belief-Tailored",
+                            cf_control_level_s2, cf_predictors_s2, cf_label_map,
+                            max_display = 12)
+
+cat("Study 1 (Belief-Tailored vs. Adversarial Dialogue): omnibus p = ",
+    format.pval(headline_s1$cal_p, digits = 3), ", ", headline_s1$n_sig,
+    "/", headline_s1$n_tested, " covariates BLP-significant\n", sep = "")
+cat("Study 2 (Belief-Tailored vs. Cats & Dogs Control): omnibus p = ",
+    format.pval(headline_s2$cal_p, digits = 3), ", ", headline_s2$n_sig,
+    "/", headline_s2$n_tested, " covariates BLP-significant\n", sep = "")
+
+fig_causal_forest <- (
+  headline_s1$plot + labs(title = NULL, subtitle = "Study 1: Belief-Tailored vs. Adversarial Dialogue")
+) + (
+  headline_s2$plot + labs(title = NULL, subtitle = "Study 2: Belief-Tailored vs. Cats & Dogs Control")
+) +
+  patchwork::plot_annotation(
+    title = "SHAP Variable Importance: Heterogeneity in Treatment Effects on 2020 Denialism",
+    tag_levels = "A"
+  )
+
+print(fig_causal_forest)
+
+ggsave("figures/supplement/fig-causal-forest.png", fig_causal_forest, width = 14, height = 7, dpi = 300, create.dir = TRUE)
+
+```

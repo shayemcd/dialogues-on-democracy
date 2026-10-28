@@ -1,0 +1,41 @@
+cff-version: 1.2.0
+message: "If you use the data, instruments, or code from this study, please cite it as follows:"
+title: "Dialogues on Democracy: Belief-Tailored AI Conversations Reduce Inaccurate Election Denial Beliefs"
+authors:
+  - family-names: "Hopkins"
+    given-names: "Shaye-Ann M."
+    orcid: "https://orcid.org/0000-0002-3560-7393"
+  - family-names: "Costello"
+    given-names: "Thomas H."
+    orcid: "https://orcid.org/0000-0002-5188-3881"
+  - family-names: "Pennycook"
+    given-names: "Gordon"
+    orcid: "https://orcid.org/0000-0003-1344-6143"
+  - family-names: "Rand"
+    given-names: "David G."
+    orcid: "https://orcid.org/0000-0001-8975-2783"
+year: 2026
+url: "https://github.com/shayemcd/dialogues-on-democracy"
+repository-code: "https://github.com/shayemcd/dialogues-on-democracy"
+preferred-citation:
+  type: article
+  title: "Dialogues on Democracy: Belief-Tailored AI Conversations Reduce Inaccurate Election Denial Beliefs"
+  authors:
+    - family-names: "Hopkins"
+      given-names: "Shaye-Ann M."
+    - family-names: "Costello"
+      given-names: "Thomas H."
+    - family-names: "Pennycook"
+      given-names: "Gordon"
+    - family-names: "Rand"
+      given-names: "David G."
+  year: 2026
+  publisher: "Research Square"
+  doi: "10.21203/rs.3.rs-8663921/v1"
+  url: "https://doi.org/10.21203/rs.3.rs-8663921/v1"
+keywords:
+  - large language models
+  - political psychology
+  - election denialism
+  - belief change
+  - persuasion

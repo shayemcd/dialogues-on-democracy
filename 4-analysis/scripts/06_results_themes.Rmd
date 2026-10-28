@@ -1,0 +1,251 @@
+---
+title: "06. Dialogues on Democracy: Results 2, Claim Themes and Sentiment"
+author: "Shaye"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+    toc: true
+    toc_float: true
+    toc_collapsed: false
+---
+
+Manuscript section "Efficacy is robust across conspiracy themes and shifting conversational sentiment": the distribution of
+participants' stated election claims by theme (GPT-coded, `02a_llm_theme_coding.R`), condition effects within each theme, and
+sentiment across conversation rounds. Produces `figures/fig-themes.png` and the supplement's sentiment figure.
+
+# Set Up
+
+```{r packages & wd, include=FALSE}
+rm(list=ls())
+options(scipen=1, digits=3)
+
+local({
+  if (!file.exists(".here") && !file.exists("../.here")) {
+    p <- tryCatch(rstudioapi::getSourceEditorContext()$path, error = function(e) "")
+    if (nzchar(p)) setwd(dirname(p))
+  }
+  here::i_am("scripts/06_results_themes.Rmd")
+})
+
+knitr::opts_knit$set(root.dir = here::here())  # relative paths (data/, results/, figures/) resolve to 4-analysis/ when knitting
+setwd(here::here())
+
+source(here::here("R", "setup.R"))   # packages, data, reference levels, palettes, outcome vectors
+report::report_system()
+
+# 05_results_effects.Rmd compares conditions with Control as the reference and Study as a factor; the sentiment models
+# below were fit in that state
+df_both$ConditionFeedback <- relevel(df_both$ConditionFeedback, ref = "Control")
+df_both$Study <- as.factor(df_both$Study)
+```
+
+# Claim themes
+
+### Figure: Claim themes and effects by theme (`fig-themes`)
+
+```{r ellemr themes summary, fig.height=6, fig.width=14, warning=FALSE}
+
+df_convos <- df_convos %>% 
+  mutate(ConspiracyTheme_Main = if_else(ConspiracyTheme_Main == "Gibberish or Irrelevant", "Unrelated",ConspiracyTheme_Main)) 
+
+fig.themes <- df_convos %>% 
+  #filter(ConspiracyTheme_Main != "Unrelated" & ConspiracyTheme_Main != "Other") %>%
+  group_by(ConspiracyTheme_Main) %>%
+  summarise(count = n()) %>%
+  mutate(percentage = count / sum(count) * 100) %>%
+  
+  ggplot(aes(x = reorder(ConspiracyTheme_Main, percentage), y = percentage)) +
+  geom_bar(stat = "identity", fill = "#080E5B", color = NA) +  # Use stat="identity" to plot percentages
+  geom_text(aes(label = paste0(round(percentage, 2), "% (n=", count, ")")), hjust = -0.1, size = 4) + 
+  labs(x = "Conspiracy Type", y = "% of Total", title = "a) Election conspiracy themes") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  theme_classic() + 
+  coord_flip()
+#fig.themes
+
+
+df_themeeff_long <- df_convos %>%
+  filter(ConspiracyTheme_Main != "Unrelated" & ConspiracyTheme_Main != "Other") %>%
+  dplyr::rename("2020 Denialism" = ER0_Diff,
+                "Claim Certainty" = Sureness_Diff) %>%
+  tidyr::pivot_longer(
+    cols = c("2020 Denialism", "Claim Certainty"),
+    names_to = "Outcome",
+    values_to = "Value") %>%
+  mutate(ConspiracyTheme_Main = forcats::fct_infreq(ConspiracyTheme_Main))
+
+
+fig.themeeffa <- ggplot(df_themeeff_long, aes(x = ConditionFeedback, y = Value, color = Outcome)) +
+  #geom_jitter(position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.5), alpha = 0.1) +
+  stat_summary( fun.data = ggplot2::mean_se, geom = "errorbar", width = 0, position = position_dodge(width = 0.5)) +
+  stat_summary(fun = mean, geom = "point", size = 3,position = position_dodge(width = 0.5)) +
+  facet_wrap(~ ConspiracyTheme_Main, nrow = 2) +
+  geom_hline(yintercept = 0, colour = "darkgray", alpha = 0.4, size = 0.8, linetype = "dashed") +
+  #stat_compare_means(ref.group = "Control", hide.ns = TRUE, label = "p.signif", na.rm = TRUE, label.y = 15) +
+  scale_color_manual(values = c("2020 Denialism" = "#0B1B66", "Claim Certainty" = "#20A49C")) +
+  labs(x = "Condition - Feedback Type", y = "Outcome Change", color = "Denialism Outcome", title = "b) AI conversation effects by condition") +
+  theme_classic() +
+  coord_flip() #+
+  #ylim(c(-8,8))
+#fig.themeeffa
+
+
+sort(table(df_convos$ConspiracyTheme_Main))
+prop.table(table(df_both$EmotionalTone))*100
+prop.table(table(df_both$TypeOfThreat))*100
+prop.table(table(df_both$TargetOfThreat))*100
+
+
+report(chisq.test(table(df_convos$ConspiracyTheme_Main, df_convos$ER0_Diff)))
+report(chisq.test(table(df_convos$ConspiracyTheme_Main, df_convos$Sureness_Diff)))
+
+```
+
+```{r merged themes fig, fig.height=16, fig.width=14, warning=FALSE}
+
+fig_themes <- (
+  (fig.themes / fig.themeeffa) +
+  plot_layout(guides = "collect")
+) & theme(legend.position = "bottom")
+fig_themes
+
+ggsave("figures/fig-themes.png", fig_themes, width = 12, height = 10, dpi = 600,create.dir = TRUE)
+
+
+```
+
+# Sentiment
+
+```{r sentiment analysis}
+
+#first 3 rows show initial responses to conspirsolicitat + expounding, row 3 is repeat of row 1 (dropped from seniment analysis)
+#user response 1 = conspirsolicitat + expounding merged (fed to gpt)
+#gpt response 1 = initial response to that
+#user response 3 = 1305 vs res 4 = 764 (only in chat conditions), not all users had to provide a 3rd response, 
+# Reshape data from wide to long format
+df_long <- df_both %>%
+  pivot_longer(
+    cols = starts_with("userResponse") | starts_with("GPTResponse"),
+    names_to = c("Speaker", "Round"),
+    names_pattern = "(user|GPT)Response_(\\d)",
+    values_to = "ResponseText") %>%
+  mutate(Round = as.numeric(Round),
+         Speaker = factor(Speaker, levels = c("user", "GPT"))) %>%
+  dplyr::filter(Round < 5, 
+                !(is.na(Round)))
+
+df_long$ConvoWords <- str_count(df_long$ResponseText, "\\w+")
+summary(df_long$ConvoWords)
+
+df_long %>%
+  dplyr::summarize(ConvoTime = mean(ConvoTime,na.rm = T),
+                   ConvoWords = mean(ConvoWords,na.rm = T))
+
+df_long %>%
+   group_by(ConditionFeedback) %>%
+  dplyr::summarize(ConvoTime = mean(ConvoTime,na.rm = T),
+                   ConvoWords = mean(ConvoWords,na.rm = T))
+
+df_long %>%
+   group_by(Speaker) %>%
+  dplyr::summarize(ConvoTime = mean(ConvoTime,na.rm = T),
+                   ConvoWords = mean(ConvoWords,na.rm = T))
+
+
+df_long %>%
+   group_by(Speaker,Round) %>%
+  dplyr::summarize(ConvoTime = mean(ConvoTime,na.rm = T),
+                   ConvoWords = mean(ConvoWords,na.rm = T))
+
+table(df_long$Round)
+
+
+# Use get_sentences to split text into sentences
+df_long$Sentences <- get_sentences(df_long$ResponseText)
+
+# Perform sentiment analysis on the processed sentences
+sentiment_scores <- sentiment_by(df_long$Sentences)
+
+# Add the sentiment scores
+df_long$SentimentScore <- sentiment_scores$ave_sentiment
+summary(df_long$SentimentScore)
+
+       
+table(df_long$Speaker,useNA = "always")
+
+
+library(lme4); library(lmerTest); library(emmeans)
+
+df_user <- df_long %>%
+  filter(Speaker == "user", !is.na(SentimentScore)) %>%
+  mutate(Round_c = Round - 1,                 # 0 = participant's initial claim
+         AbsSent = abs(SentimentScore))       # distance from neutral
+
+# 1. Does sentiment change across rounds, and does that differ by condition?
+m_sent <- lmer(SentimentScore ~ Round_c * ConditionFeedback + Study + (1 | ResponseId),
+               data = df_user)
+summary(m_sent)
+anova(m_sent)                                 # omnibus Round x Condition test
+
+# 2. "Moving toward neutrality" = shrinking absolute sentiment
+m_abs <- lmer(AbsSent ~ Round_c * ConditionFeedback + Study + (1 | ResponseId), data = df_user)
+summary(m_abs)
+# Slopes per condition
+emtrends(m_sent, ~ ConditionFeedback, var = "Round_c", infer = TRUE)
+
+
+interactions::interact_plot(m_sent, pred = Round_c, modx = ConditionFeedback, plot.points = FALSE, interval = TRUE,
+                    x.label = "Round of Conversation", y.label = "Sentiment Score", legend.main = "Condition",
+                    colors = condition_colors[levels(df_user$ConditionFeedback)]) +
+  theme_classic()
+
+summary(df_user$SentimentScore)
+
+
+```
+
+## Supplement figure: sentiment across rounds (`fig-sentiment`)
+
+```{r sentiment plot, fig.height=10, fig.width=10, warning=FALSE}
+  #supplement fig
+pd <- position_dodge(width = 0.2)
+
+fig_sentiment <- ggplot(df_long %>% filter(!(is.na(ConditionFeedback)) & !(is.na(Speaker))) ,
+                        aes(x = Round, y = SentimentScore, group = interaction(ResponseId, Speaker), color = Speaker)) +
+  # Plot individual sentiment trajectories with transparency
+  geom_hline(yintercept = 0, colour = "darkgray", alpha = 1, size = 0.5, linetype = "dashed") + 
+  geom_line(alpha = 0.03, aes(group = interaction(ResponseId, Speaker)), position = pd) + #background jittered lines
+  stat_summary(aes(group = Speaker), fun = mean, geom = "line", size = 1, position = pd) +   # line connecting dots
+  
+  # Plot mean and standard deviation with error bars, dodged
+  stat_summary(aes(group = Speaker), 
+               fun.data = function(x) { 
+                 data.frame(
+                   y = mean(x),
+                   ymin = mean(x) - sd(x),
+                   ymax = mean(x) + sd(x) )}, 
+               geom = "errorbar", width = 0.1, position = pd) +
+  # Plot mean points, dodged
+  stat_summary(aes(group = Speaker, fill = Speaker), fun = mean, geom = "point", size = 3, shape = 21, position = pd) + #circles
+  
+  #scale_x_continuous(breaks = 1:3) +
+  scale_color_manual(values = c("user" = "#080E5B", "GPT" = "#8CB6A9")) +
+  scale_fill_manual(values = c("user" = "#080E5B", "GPT" = "#8CB6A9")) +
+  labs(title = "Sentiment Scores Across Rounds of Conversation",
+    x = "Round",
+    y = "Sentiment Score",
+    color = "Speaker") +
+  # Apply a clean theme
+  theme_classic() +
+  theme(text = element_text(size = 12),
+        plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+        legend.position = "right") +
+  facet_wrap(~ConditionFeedback, scales = "fixed", ncol = 4)
+fig_sentiment
+
+ggsave("figures/supplement/fig-sentiment.png", fig_sentiment, width = 10, height = 6.5, dpi = 300, create.dir = TRUE)
+
+
+```
