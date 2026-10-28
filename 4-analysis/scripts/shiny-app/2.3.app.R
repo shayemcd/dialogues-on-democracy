@@ -1,63 +1,62 @@
-#install.packages(c("shiny", "ggplot2", "dplyr", "ggthemes", "ggpubr","jtools"))
+#install.packages(c("shiny", "ggplot2", "dplyr", "tidyr", "ggthemes", "ggpubr","jtools"))
 
 library(shiny)
 library(ggplot2)
 library(dplyr)
+library(tidyr)
 library(ggthemes)
 library(ggpubr)
 library(jtools)
 
 # Load data ----
-# Check if pre-cached df_app.RData exists for instant startup
-app_cache_file <- file.path("df_app.RData")
-if (!file.exists(app_cache_file)) {
-  candidate_caches <- c(
-    file.path("scripts", "shiny-app", "df_app.RData"),
-    file.path("4-analysis", "scripts", "shiny-app", "df_app.RData")
-  )
-  found_cache <- candidate_caches[file.exists(candidate_caches)]
-  if (length(found_cache) > 0) app_cache_file <- found_cache[1]
-}
+# The app uses the final cleaned, sanitized dataset (clean_dfs.RData) in long form.
+# Locate clean_dfs.RData across candidate directories depending on working directory
+clean_candidates <- c(
+  file.path("..", "..", "data", "clean_dfs.RData"),
+  file.path("..", "..", "4-analysis", "data", "clean_dfs.RData"),
+  file.path("4-analysis", "data", "clean_dfs.RData"),
+  file.path("data", "clean_dfs.RData"),
+  file.path("..", "data", "clean_dfs.RData"),
+  "clean_dfs.RData"
+)
+clean_file <- clean_candidates[file.exists(clean_candidates)][1]
 
-if (file.exists(app_cache_file)) {
-  message("Loading cached app data from: ", app_cache_file)
-  load(app_cache_file)
-} else {
-  data_dirs <- c(
-    file.path("..", "..", "data"),
-    file.path("..", "..", "4-analysis", "data"),
-    "data",
-    file.path("4-analysis", "data"),
-    "."
-  )
+# App cache fallback (e.g. standalone bundle on shinyapps.io)
+app_cache_candidates <- c(
+  "df_app.RData",
+  file.path("scripts", "shiny-app", "df_app.RData"),
+  file.path("4-analysis", "scripts", "shiny-app", "df_app.RData")
+)
+app_cache_file <- app_cache_candidates[file.exists(app_cache_candidates)][1]
 
-  data_files <- unique(unlist(lapply(data_dirs[dir.exists(data_dirs)], function(d) {
-    list.files(d, pattern = "df_long.*\\.RData$", full.names = TRUE)
-  })))
-
-  if (length(data_files) == 0) {
-    fallback_files <- c(
-      file.path("..", "..", "data", "df_long.RData"),
-      file.path("data", "df_long.RData"),
-      "df_long.RData"
-    )
-    data_files <- fallback_files[file.exists(fallback_files)]
+if (!is.na(clean_file) && file.exists(clean_file)) {
+  message("Building app data from final cleaned dataset: ", clean_file)
+  clean_env <- new.env()
+  load(clean_file, envir = clean_env)
+  
+  if (!"df_both" %in% ls(clean_env)) {
+    stop("clean_dfs.RData does not contain df_both.")
   }
-
-  if (length(data_files) == 0) {
-    stop("Could not find df_long.RData in the data folder or candidate directories.")
-  }
-
-  file_info <- file.info(data_files)
-  data_file <- rownames(file_info)[order(file_info$mtime, decreasing = TRUE)][1]
-  message("Loading df_long from: ", data_file)
-  load(data_file)
-
+  
+  # Reshape wide conversation turns to long format
+  df_long <- clean_env$df_both %>%
+    pivot_longer(
+      cols = matches("^(user|GPT)Response_\\d"),
+      names_to = c("Speaker", "Round"),
+      names_pattern = "(user|GPT)Response_(\\d)",
+      values_to = "ResponseText"
+    ) %>%
+    mutate(
+      Round = as.numeric(Round),
+      Speaker = factor(Speaker, levels = c("user", "GPT"))
+    ) %>%
+    filter(Round < 5, !is.na(Round))
+  
   participant_map <- df_long %>%
     distinct(ResponseId) %>%
     arrange(ResponseId) %>%
     mutate(IncrementalResponseId = row_number())
-
+  
   df <- df_long %>%
     left_join(participant_map, by = "ResponseId") %>%
     select(
@@ -74,9 +73,14 @@ if (file.exists(app_cache_file)) {
       ConditionFeedback = if_else(is.na(ConditionFeedback), "Unassigned", as.character(ConditionFeedback)),
       ConditionFeedback = factor(ConditionFeedback)
     )
-
-  rm(df_long)
+  
+  rm(clean_env, df_long)
   gc()
+} else if (!is.na(app_cache_file) && file.exists(app_cache_file)) {
+  message("Loading cached app data from: ", app_cache_file)
+  load(app_cache_file)
+} else {
+  stop("Could not find clean_dfs.RData or cached df_app.RData in candidate directories.")
 }
 
 # Condition colors (used for plots & convo container accent) ----
