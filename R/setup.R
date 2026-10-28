@@ -1,5 +1,5 @@
 # Shared setup for the analysis scripts that work on the Study 1 + 2 data
-# (03b, 04, 05, 06, 07). Each script anchors here::here() to 4-analysis/ and then calls
+# (03b, 04, 05, 06, 07). Each script anchors here::here() to the repository root and then calls
 #   source(here::here("R", "setup.R"))
 # so the packages, data, reference levels, colours and outcome vectors are defined once.
 # 01_cleaning.Rmd builds the data this file loads; 08, 09 and 10 are self-contained.

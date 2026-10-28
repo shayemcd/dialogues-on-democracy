@@ -43,10 +43,10 @@ To ensure full compliance with IRB protocols and participant privacy while maxim
 
 ## 3. How to Reproduce Data Cleaning from Scratch
 
-Downstream analyses consume the processed dataset `4-analysis/data/clean_dfs.RData`. If you wish to reproduce `clean_dfs.RData` directly from this raw file:
+Downstream analyses consume the processed dataset `data/clean_dfs.RData`. If you wish to reproduce `clean_dfs.RData` directly from this raw file:
 
 ### Option A: Render `01_cleaning.Rmd` directly
-From R (with the working directory set to `4-analysis/` or `4-analysis/scripts/`):
+From R (with the working directory set to the repository root or `scripts/`):
 ```r
 rmarkdown::render("scripts/01_cleaning.Rmd")
 ```
@@ -65,6 +65,6 @@ source("scripts/run_all.R")
 4. Computes normalized outcome scales (0–100) and unstandardized change scores (`Post - Pre`).
 5. Imputes intention-to-treat (ITT) variables where baseline scores are carried forward for attriters.
 6. Integrates initial claim NLP classifications from `data/threat_all_statement_nlp.xlsx`.
-7. Outputs the final de-identified analytic dataset: `4-analysis/data/clean_dfs.RData` (containing `df_consp` [$n = 1,215$], `df_consp_2` [$n = 633$], `df_both` [$N = 1,848$], `df_all` [$N = 8,981$], `df_trim`, and `df_trim_2`).
+7. Outputs the final de-identified analytic dataset: `data/clean_dfs.RData` (containing `df_consp` [$n = 1,215$], `df_consp_2` [$n = 633$], `df_both` [$N = 1,848$], `df_all` [$N = 8,981$], `df_trim`, and `df_trim_2`).
 
 

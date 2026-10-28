@@ -19,7 +19,7 @@ local({
   here::i_am("scripts/05b_effects_bayesian.R")
 })
 
-analysis_dir <- if (dir.exists("4-analysis")) file.path(here::here(), "4-analysis") else here::here()
+analysis_dir <- if (file.exists(file.path(here::here(), "data", "clean_dfs.RData"))) here::here() else file.path(here::here(), "4-analysis")
 load(file.path(analysis_dir, "data/clean_dfs.RData"))
 
 # Prepare Study 1 analytic sample

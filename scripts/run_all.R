@@ -1,4 +1,4 @@
-# Runs the analysis scripts in manuscript order, each in its own R session. From R opened in 4-analysis/ or 4-analysis/scripts/:
+# Runs the analysis scripts in manuscript order, each in its own R session. From R opened at the repository root or scripts/:
 #   source("scripts/run_all.R")        # or source("run_all.R") from scripts/
 #
 # Steps are grouped. By default only the group "" runs (about 3 minutes); add groups to `include` for the rest:
@@ -35,6 +35,10 @@ stopifnot(file.exists(file.path(scripts_dir, "run_all.R")))
 owd <- setwd(scripts_dir)
 tryCatch({
   for (f in names(steps)[steps %in% include]) {
+    if (!file.exists(f)) {
+      message("== Skipping ", f, " (not in repository)")
+      next
+    }
     message("== ", f, " (", format(Sys.time(), "%H:%M:%S"), ")")
     expr <- if (grepl("\\.Rmd$", f)) sprintf("rmarkdown::render('%s', quiet = TRUE)", f) else sprintf("source('%s')", f)
     status <- system2(file.path(R.home("bin"), "Rscript"), c("-e", shQuote(expr)), stdout = FALSE)

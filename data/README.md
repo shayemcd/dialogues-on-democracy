@@ -15,7 +15,7 @@ De-identified, analysis-ready data for Study 1 and Study 2. The shareable stage-
 
 ## Primary Aggregate Outcome Measures
 
-The primary statistical models across the manuscript and supplement (`05_results_effects.Rmd`, `05b_effects_bayesian.R`, `07_results_belief_level.Rmd`, `08_results_strategies.Rmd`, `09_heterogeneity_forests.Rmd`, `10_mediation.Rmd`) and manuscript figures analyze the **8 aggregate outcome variables** (`dvs_post` in `4-analysis/R/setup.R`). These correspond directly to the measures described in the manuscript and the supplement measures table (Table S1 / `@tbl-measures`).
+The primary statistical models across the manuscript and supplement (`05_results_effects.Rmd`, `05b_effects_bayesian.R`, `07_results_belief_level.Rmd`, `08_results_strategies.Rmd`, `09_heterogeneity_forests.Rmd`, `10_mediation.Rmd`) and manuscript figures analyze the **8 aggregate outcome variables** (`dvs_post` in `R/setup.R`). These correspond directly to the measures described in the manuscript and the supplement measures table (Table S1 / `@tbl-measures`).
 
 While individual survey items are retained in `clean_dfs.RData` for complete replication transparency, the analyses intentionally focus on these composite and key construct aggregates to reduce measurement error and assess generalizability across specific and broad conspiratorial beliefs.
 
